@@ -4,12 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## State of the repository
 
-The installer is implemented, and has not yet been run on Windows. The development host is Linux (no PowerShell, no `cmd.exe`), but the product runs only on Windows 11: say so instead of claiming that a change was tested on Windows.
+The installer is implemented. The development host is Linux (no PowerShell, no `cmd.exe`), but the product runs only on Windows 11: say so instead of claiming that a change was tested on Windows. The user tests on Windows by downloading the repository from GitHub as a ZIP file, so a change has to be pushed before it can be tried there.
 
 - `python3 -m unittest discover tests` runs all tests (about 40 seconds; Python 3.12 or later, standard library only). One class or test: `python3 -m unittest discover tests -k EndToEnd`.
 - `python3 -m py_compile plamo-3-translate-*.py` and `file install-plamo-3-translate.bat` (must say ASCII text, with CRLF line terminators) after editing.
 - What the tests cover: option/environment/saved-value precedence, validation, the license gate, downloads (resume, checksum, reuse) against a local HTTP server, the launcher against `tests/stub_llama_server.py` (start, `/health`, crash, every conflict case, check mode), and a whole install / update / uninstall into a temporary directory.
-- What they cannot cover, and what therefore has never been executed: `install-plamo-3-translate.bat`, and the functions in the "Windows specifics" section of `plamo-3-translate-installer.py` (`icacls`, shortcuts through PowerShell, elevation, `schedule_delete`, memory size, GPU names) and the `ctypes` code of the launcher (job object, console title, error mode). The tests replace those functions; when changing them, check the Windows API or command documentation, because nothing here will catch a mistake.
+- First run on Windows 11 (2026-11-16, commit `7205ab2`, `cpu`, 0.8B Q4_0, by hand): the `.bat`, interactive installation, `icacls` result (Users `RX` on the install directory and on the created `C:\LLM`), both launcher modes, both conflict error screens, children gone after closing the window and after killing the launcher, the client wrapper with `| more` quit by `q` (no traceback) all worked. The PC had the Visual C++ v14 runtime, so the missing-DLL path is still unseen. Not yet seen on Windows: installer re-run with options, `--expose-llama`, uninstalling (`schedule_delete`), the open items of the two handover notes.
+- `tests/windows-check.bat` (runs `tests/windows_check.py` elevated, with the Python the installer `.bat` keeps in `%TEMP%`) automates most of what is left and writes `%USERPROFILE%\plamo-3-translate-check.log`; it is itself unrun so far, so a failure it reports may be its own bug. Ask the user for that log rather than for manual checks.
+- What the Linux tests cannot cover: `install-plamo-3-translate.bat`, and the functions in the "Windows specifics" section of `plamo-3-translate-installer.py` (`icacls`, shortcuts through PowerShell, elevation, `schedule_delete`, memory size, GPU names) and the `ctypes` code of the launcher (job object, console title, error mode). The tests replace those functions; when changing them, check the Windows API or command documentation, because nothing here will catch a mistake.
 
 `README.md` is the user documentation and must be kept in step with the implementation (options table, shortcuts, file layout, the "Status" section about what is untested).
 
@@ -62,6 +64,6 @@ Reference material copied from another project (a Qwen3 Swallow + llama-cli inst
 
 ## File encodings
 
-- `.bat` (also the ones the installer generates): ASCII only, CRLF line ends; `cmd.exe` mishandles LF-only batch files. `.gitattributes` pins this. Write them with an explicit `newline="\r\n"`, and check with `file <path>` after editing: an editor or tool can silently change the line ends.
+- `.bat` (also the ones the installer generates): ASCII only, CRLF line ends; `cmd.exe` mishandles LF-only batch files. They are stored in git with CRLF as they are (`*.bat -text` in `.gitattributes`), so that a ZIP download gives CRLF too. Write them with an explicit `newline="\r\n"`, and check with `file <path>` after editing: an editor or tool can silently change the line ends.
 - `.py`: UTF-8 without BOM, LF, standard library only.
 - Files the installer writes at run time (`install.json`, the API key): UTF-8 without BOM.

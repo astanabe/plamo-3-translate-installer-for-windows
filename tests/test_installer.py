@@ -85,6 +85,14 @@ class PinnedFiles(unittest.TestCase):
         self.assertEqual(ins.PYTHON_URL,
                          f"https://www.python.org/ftp/python/{ins.PYTHON_VERSION}/{ins.PYTHON_ZIP}")
 
+    def test_windows_check_bat(self):
+        path = os.path.join(os.path.dirname(BAT), "tests", "windows-check.bat")
+        with open(path, "rb") as f:
+            data = f.read()
+        self.assertTrue(data.isascii())
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+        self.assertIn(f"python-{ins.PYTHON_VERSION}\\python.exe".encode(), data)
+
     def test_copies_from_resolute_are_unchanged(self):
         for path, blob in RESOLUTE_BLOBS.items():
             with open(path, "rb") as f:

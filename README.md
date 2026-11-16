@@ -9,7 +9,7 @@ This is the Windows counterpart of plamo-3-translate-installer-for-resolute (Ubu
 ## Status
 
 - Developed on Linux. The logic of the installer and the launcher is covered by tests that run there (`python3 -m unittest discover tests`); the Windows-only parts (the `.bat` file, access rights, shortcuts, elevation, the job object) cannot be run there.
-- Tests on Windows 11 are done with the `cpu` backend only.
+- Tested by hand on Windows 11 with the `cpu` backend (0.8B, Q4_0): interactive installation, the Web UI and llama-server shortcuts, the error screens when one is started while the other runs, the access rights of the install directory, and the client in the Command Prompt shortcut. Re-running with options, `--expose-llama` and uninstalling are covered by `tests\windows-check.bat` (see [Development](#development)), which has not been run yet.
 - **The `vulkan`, `cuda12` and `cuda13` backends and `--gpus` are implemented but untested**: no Windows machine with a GPU was available.
 
 ## Prerequisites
@@ -224,5 +224,6 @@ echo こんにちは | plamo-3-translate-client -           standard input -> st
 ## Development
 
 - `python3 -m unittest discover tests` runs the tests on Linux (Python 3.12 or later, standard library only). `tests/stub_llama_server.py` stands in for llama-server.
+- `tests\windows-check.bat` checks an installation on Windows: install first, close the PLaMo 3 Translate windows and double-click it. It starts and stops the servers several times, runs the client, re-runs the installer and, if you say so, tests `--expose-llama` and uninstalling; the result is written to `%USERPROFILE%\plamo-3-translate-check.log`.
 - File encodings: `.bat` files are ASCII with CRLF line ends; `.py` files are UTF-8 without BOM.
 - [plamo-3-translate-server.md](plamo-3-translate-server.md) and [plamo-3-translate-client.md](plamo-3-translate-client.md) are the handover notes for the two files that come from plamo-3-translate-installer-for-resolute, with the checks that are still to be done on Windows.
