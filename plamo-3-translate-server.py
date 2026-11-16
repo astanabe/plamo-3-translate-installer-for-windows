@@ -676,7 +676,7 @@ INDEX_HTML = """<!doctype html>
         <textarea id="text" required></textarea>
         <div class="tools">
           <button class="copy" type="button" data-target="text" aria-label="Copy the source text">Copy</button>
-          <button class="copy" type="button" aria-label="Copy the source text and the translation, joined by a ==== line">ConcatCopy</button>
+          <button class="copy" type="button" aria-label="Copy the source text and the translation, joined by a --- line">ConcatCopy</button>
         </div>
       </div>
       <div class="pane pane-dst">
@@ -684,7 +684,7 @@ INDEX_HTML = """<!doctype html>
         <textarea id="result" readonly></textarea>
         <div class="tools">
           <button class="copy" type="button" data-target="result" aria-label="Copy the translation">Copy</button>
-          <button class="copy" type="button" aria-label="Copy the source text and the translation, joined by a ==== line">ConcatCopy</button>
+          <button class="copy" type="button" aria-label="Copy the source text and the translation, joined by a --- line">ConcatCopy</button>
         </div>
       </div>
     </div>
@@ -796,7 +796,7 @@ INDEX_HTML = """<!doctype html>
     });
   }
   // Copy: the button's own textarea.  ConcatCopy (no data-target): Source text and
-  // Translation, joined by a ==== line between two empty lines.
+  // Translation, joined by a --- line between two empty lines.
   document.querySelectorAll(".copy").forEach(function (btn) {
     var label = btn.textContent, timer = null;
     function flash(message) {
@@ -809,7 +809,7 @@ INDEX_HTML = """<!doctype html>
       if (btn.dataset.target) {
         text = $(btn.dataset.target).value;
       } else if ($("text").value || $("result").value) {
-        text = $("text").value + "\\n\\n====\\n\\n" + $("result").value;
+        text = $("text").value + "\\n\\n---\\n\\n" + $("result").value;
       }
       if (!text) { flash("Empty"); return; }
       copyText(text).then(function () { flash("Copied"); },
