@@ -74,6 +74,7 @@ def make_install_tree(root, **settings):
     os.makedirs(bin_dir)
     shutil.copy(SERVER, os.path.join(root, "app"))
     shutil.copy(LAUNCHER, os.path.join(root, "app"))
+    shutil.copy(CLIENT, os.path.join(root, "app"))
     write_stub_exe(os.path.join(bin_dir, "llama-server.exe"))
     with open(os.path.join(root, "models", f"plamo-3-translate-{cfg['model']}-{cfg['quant']}.gguf"), "wb") as f:
         f.write(b"GGUF stub")

@@ -8,6 +8,7 @@ It accepts the command line the launcher and the installer use, and answers /hea
     STUB_EXIT_STATUS    exit with this status after STUB_LOAD_SECONDS instead of becoming ready
     STUB_N_CTX          context size reported by /props (default: -c, or 262144)
     STUB_TRANSLATION    the translation returned (default "Hello")
+    STUB_BUSY_SECONDS   seconds after start-up during which /slots reports a busy slot
     STUB_DEVICES        output lines of --list-devices, separated by "|"
     STUB_ARGS_FILE      write the command line (JSON) to this file at start-up
     LLAMA_API_KEY       when set, requests other than /health need "Authorization: Bearer <key>"
@@ -60,6 +61,7 @@ def main():
     n_ctx = int(os.environ.get("STUB_N_CTX") or args.ctx or 262144)
     translation = os.environ.get("STUB_TRANSLATION", "Hello")
     ready_at = time.monotonic() + load_seconds
+    busy_until = time.monotonic() + float(os.environ.get("STUB_BUSY_SECONDS", "0"))
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -97,6 +99,8 @@ def main():
                 pass
             elif self.path == "/v1/models":
                 self.reply(200, {"object": "list", "data": [{"id": args.alias, "object": "model"}]})
+            elif self.path == "/slots":
+                self.reply(200, [{"id": 0, "is_processing": time.monotonic() < busy_until}])
             elif self.path == "/props":
                 self.reply(200, {"model_path": args.model,
                                  "default_generation_settings": {"n_ctx": n_ctx}})

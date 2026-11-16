@@ -40,7 +40,7 @@ MARKER = ".plamo-3-translate-installation"
 CONFIG_NAME = "install.json"
 API_KEY_NAME = "llama-api-key.txt"
 CLIENT_BAT = "plamo-3-translate-client.bat"
-PROMPT_BAT = "command-prompt.bat"
+OLD_PROMPT_BAT = "command-prompt.bat"  # of an earlier version; removed on update
 SERVER_PY = "plamo-3-translate-server.py"
 CLIENT_PY = "plamo-3-translate-client.py"
 LAUNCHER_PY = "plamo-3-translate-launcher.py"
@@ -533,32 +533,47 @@ def cmd_exe():
     return os.environ.get("ComSpec") or os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "cmd.exe")
 
 
+def sendto_dir():
+    """The "Send to" folder of the current user (there is none for all users), or None."""
+    base = os.environ.get("APPDATA")
+    return os.path.join(base, "Microsoft", "Windows", "SendTo") if base else None
+
+
+def sendto_shortcut():
+    folder = sendto_dir()
+    return os.path.join(folder, APP_TITLE + ".lnk") if folder else None
+
+
 def shortcut_items(destdir):
-    """The Start menu shortcuts: (name, target, arguments, working directory, description)."""
+    """The shortcuts: (path of the .lnk file, target, arguments, working directory,
+    description).  Three in the Start menu (all users) and one in "Send to" (the user who
+    runs the installer), to which Explorer appends the selected files."""
     python = installed_python(destdir)
     launcher = os.path.join(destdir, "app", LAUNCHER_PY)
     installer = os.path.join(destdir, "app", INSTALLER_PY)
-    prompt = os.path.join(destdir, PROMPT_BAT)
-    return [
-        (f"{APP_TITLE} Web UI", python, f'"{launcher}" --mode webui', destdir,
+    menu = menu_dir()
+    items = [
+        (os.path.join(menu, f"{APP_TITLE} Web UI.lnk"), python, f'"{launcher}" --mode webui', destdir,
          "Start PLaMo 3 Translate and open the translation page in the web browser"),
-        (f"{APP_TITLE} llama-server", python, f'"{launcher}" --mode llama', destdir,
+        (os.path.join(menu, f"{APP_TITLE} llama-server.lnk"), python, f'"{launcher}" --mode llama', destdir,
          "Start llama-server only, for plamo-3-translate-client.py"),
-        (f"{APP_TITLE} Command Prompt", cmd_exe(), f'/k ""{prompt}""', destdir,
-         "Command prompt (UTF-8) for plamo-3-translate-client"),
-        (f"Uninstall {APP_TITLE}", python,
+        (os.path.join(menu, f"Uninstall {APP_TITLE}.lnk"), python,
          f'"{installer}" --uninstall --destdir "{destdir}" --elevate --pause',
          os.environ.get("SystemRoot") or r"C:\Windows",
          "Remove PLaMo 3 Translate from this PC"),
     ]
+    if sendto_shortcut():
+        items.append((sendto_shortcut(), python, f'"{launcher}" --mode translate', destdir,
+                      "Translate text or Markdown files with PLaMo 3 Translate"))
+    return items
 
 
-def shortcut_script(folder, items):
+def shortcut_script(items):
     """PowerShell that writes the .lnk files (only PowerShell/COM can make them)."""
     lines = ["$shell = New-Object -ComObject WScript.Shell"]
-    for name, target, arguments, workdir, description in items:
+    for path, target, arguments, workdir, description in items:
         lines += [
-            f"$s = $shell.CreateShortcut({ps_quote(os.path.join(folder, name + '.lnk'))})",
+            f"$s = $shell.CreateShortcut({ps_quote(path)})",
             f"$s.TargetPath = {ps_quote(target)}",
             f"$s.Arguments = {ps_quote(arguments)}",
             f"$s.WorkingDirectory = {ps_quote(workdir)}",
@@ -574,10 +589,14 @@ def create_shortcuts(destdir):
     for name in os.listdir(folder):  # shortcuts of an older version
         if name.lower().endswith(".lnk"):
             os.remove(os.path.join(folder, name))
+    if sendto_dir():
+        os.makedirs(sendto_dir(), exist_ok=True)
+    else:
+        warn("%APPDATA% is not set; the \"Send to\" shortcut is not created")
     try:
-        run_powershell(shortcut_script(folder, shortcut_items(destdir)))
+        run_powershell(shortcut_script(shortcut_items(destdir)))
     except (OSError, subprocess.SubprocessError) as e:
-        raise Die(f"cannot create the Start menu shortcuts in {folder}: {e}") from None
+        raise Die(f"cannot create the shortcuts in {folder}: {e}") from None
     return folder
 
 
@@ -1263,7 +1282,8 @@ Installation settings:
             if os.path.abspath(source).lower() != os.path.abspath(target).lower():
                 shutil.copyfile(source, target)
         write_text(os.path.join(destdir, CLIENT_BAT), client_bat(self.val["llama_port"]), newline="\r\n")
-        write_text(os.path.join(destdir, PROMPT_BAT), prompt_bat(), newline="\r\n")
+        if os.path.exists(os.path.join(destdir, OLD_PROMPT_BAT)):
+            os.remove(os.path.join(destdir, OLD_PROMPT_BAT))
 
     def write_api_key(self):
         """Keep the API key across re-runs so that clients keep working."""
@@ -1359,10 +1379,12 @@ PLaMo 3 Translate is installed.
   Start menu : {APP_TITLE} > {APP_TITLE} Web UI
                (starts the servers and opens http://127.0.0.1:{val['web_port']}/ ;
                 closing its window stops them)
-  Client     : {APP_TITLE} > {APP_TITLE} llama-server, then in
-               {APP_TITLE} > {APP_TITLE} Command Prompt:
-                 plamo-3-translate-client FILE
+  Files      : right-click text or Markdown files > "Send to" > "{APP_TITLE}"
+               (doc.md -> doc.en.md or doc.ja.md; llama-server is started if needed),
+               or {os.path.join(val['destdir'], CLIENT_BAT)} FILE
+               while the Web UI or "{APP_TITLE} llama-server" is running
   Shortcuts  : {folder}
+               {sendto_shortcut() or '("Send to": not created)'}
   Settings   : {os.path.join(val['destdir'], CONFIG_NAME)}
   Context    : {self.n_ctx or 'unknown'} tokens""")
         if val["expose_llama"] == "yes":
@@ -1391,7 +1413,7 @@ PLaMo 3 Translate is installed.
         self.write_api_key()
         self.save_config()
         set_permissions(self.val["destdir"], recursive=True)
-        info("Creating the Start menu shortcuts")
+        info("Creating the Start menu and \"Send to\" shortcuts")
         folder = create_shortcuts(self.val["destdir"])
         self.smoke_test()
         self.cleanup_old_models()
@@ -1408,15 +1430,17 @@ PLaMo 3 Translate is installed.
         folder = menu_dir()
         data = local_data_dir()
         print("This will remove PLaMo 3 Translate and delete:")
-        for path in (destdir, folder, data):
+        for path in (destdir, folder, sendto_shortcut(), data):
             if path:
                 print(f"  {path}")
         if not self.confirm(f"Uninstall {APP_TITLE}?"):
             raise Die("aborted (use --yes to uninstall non-interactively)")
         self.check_running_for_uninstall()
 
-        info("Removing the Start menu shortcuts")
+        info("Removing the shortcuts")
         remove_tree(folder)
+        if sendto_shortcut() and os.path.exists(sendto_shortcut()):
+            os.remove(sendto_shortcut())
         if data:
             remove_tree(data)
         if os.path.isdir(destdir):
@@ -1435,7 +1459,7 @@ PLaMo 3 Translate is installed.
                 warn(f"{destdir} does not look like a PLaMo 3 Translate installation; not removed")
         print(f"""
 PLaMo 3 Translate was uninstalled.
-Logs of other users (%LOCALAPPDATA%\\PLaMo3Translate in their profiles) and the copy of
+Logs and "Send to" shortcuts of other users (in their profiles) and the copy of
 Python that install-plamo-3-translate.bat keeps in %TEMP%\\plamo-3-translate-installer
 were kept; remove them manually if they are no longer needed.""")
 
@@ -1466,25 +1490,6 @@ if not defined PLAMO3_LLAMA_URL set "PLAMO3_LLAMA_URL=http://127.0.0.1:{llama_po
 if not defined PLAMO3_LLAMA_API_KEY if exist "%~dp0{API_KEY_NAME}" set /p PLAMO3_LLAMA_API_KEY=<"%~dp0{API_KEY_NAME}"
 "%~dp0python\\python.exe" "%~dp0app\\{CLIENT_PY}" %*
 exit /b %ERRORLEVEL%
-"""
-
-
-def prompt_bat():
-    """Start-up file of the "Command Prompt" shortcut: UTF-8 code page (the client reads
-    and writes UTF-8) and the install directory on PATH."""
-    return f"""@echo off
-rem Generated by the PLaMo 3 Translate installer; changes are overwritten on re-run.
-chcp 65001 >nul
-set "PATH=%~dp0;%PATH%"
-title {APP_TITLE} Command Prompt
-cd /d "%USERPROFILE%"
-echo {APP_TITLE} Command Prompt (code page 65001, UTF-8)
-echo.
-echo   plamo-3-translate-client FILE       translate a text or Markdown file
-echo   plamo-3-translate-client --help     show the options
-echo.
-echo Start "{APP_TITLE} llama-server" (or the Web UI) from the Start menu first.
-echo.
 """
 
 

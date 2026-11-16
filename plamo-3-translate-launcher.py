@@ -2,8 +2,9 @@
 """PLaMo 3 Translate launcher (Windows): starts llama-server and the web server on demand.
 
     python.exe plamo-3-translate-launcher.py --mode webui|llama|check [options]
+    python.exe plamo-3-translate-launcher.py --mode translate FILE...
 
-It is run by the Start menu shortcuts that install-plamo-3-translate.bat creates, with the
+It is run by the Start menu and "Send to" shortcuts that install-plamo-3-translate.bat creates, with the
 Python that the installer put into the install directory (standard library only), and
 reads its settings from install.json in the install directory.
 
@@ -12,6 +13,12 @@ reads its settings from install.json in the install directory.
           Closing the window (or Ctrl-C) stops both.  If the Web UI is already running,
           only the browser is opened.
   llama   start llama-server only, for plamo-3-translate-client.py and other clients.
+  translate
+          the "Send to" shortcut: translate the given text or Markdown files with
+          plamo-3-translate-client.py (doc.md -> doc.en.md or doc.ja.md, next to the
+          file).  A llama-server that is running already (Web UI or llama-server
+          shortcut) is used and left running; otherwise llama-server is started here
+          and stopped when the files are done.
   check   used by the installer: start both, translate a test sentence through the web
           server, write the result to --result-file and stop.
 
@@ -20,9 +27,9 @@ Options:
   --no-browser        webui: do not open the web browser
   --result-file FILE  check: write a JSON object (n_ctx, translation, gpu_lines) to FILE
 
-Exit status: 0 success (also "already running" and a stop by Ctrl-C), 1 error.  In the
-webui and llama modes an error is shown until a key is pressed, so that the message can
-be read before the window closes.
+Exit status: 0 success (also "already running" and a stop by Ctrl-C), 1 error.  Except
+in the check mode an error is shown until a key is pressed, so that the message can be
+read before the window closes.
 """
 
 import argparse
@@ -42,6 +49,8 @@ MODEL_ALIAS = "plamo-3-translate"
 CONFIG_NAME = "install.json"
 API_KEY_NAME = "llama-api-key.txt"
 SERVER_PY = "plamo-3-translate-server.py"
+CLIENT_PY = "plamo-3-translate-client.py"
+CLIENT_BAT = "plamo-3-translate-client.bat"
 LLAMA_SERVER_EXE = "llama-server.exe"
 LOG_NAME = "llama-server.log"
 WEB_TITLE = b"<title>PLaMo 3 Translate</title>"  # how the page of the web server is recognized
@@ -533,39 +542,142 @@ def translation_test(cfg):
     return translation
 
 
+def start_llama(root, cfg, api_key, children):
+    """Start llama-server as a child; returns the path of its log."""
+    cmd = llama_command(root, cfg)
+    log_path, log_file = open_log()
+    info(f"Starting llama-server ({cfg['backend']}, plamo-3-translate-{cfg['model']}-{cfg['quant']})")
+    info(f"  log: {log_path}")
+    env = dict(os.environ)
+    if api_key:
+        env["LLAMA_API_KEY"] = api_key
+    else:
+        env.pop("LLAMA_API_KEY", None)
+    with log_file:
+        children.start("llama-server", cmd, env, stdout=log_file)
+    return log_path
+
+
+def client_environment(cfg, api_key):
+    """Environment of plamo-3-translate-server.py and plamo-3-translate-client.py."""
+    env = dict(os.environ)
+    env["PLAMO3_LLAMA_URL"] = f"http://127.0.0.1:{cfg['llama_port']}"
+    if api_key:
+        env["PLAMO3_LLAMA_API_KEY"] = api_key
+    else:
+        env.pop("PLAMO3_LLAMA_API_KEY", None)
+    return env
+
+
+def others_busy(cfg, api_key):
+    """Whether llama-server is working on a request (its /slots endpoint)."""
+    result = http_request(cfg["llama_port"], "GET", "/slots", headers=auth_headers(api_key))
+    if not result or result[0] != 200:
+        return False
+    try:
+        return any(slot.get("is_processing") for slot in json.loads(result[1]))
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def wait_idle(cfg, api_key, children):
+    """Before stopping a llama-server that was started here: another translation (a second
+    "Send to", a client) may have found it running and be using it."""
+    told = False
+    quiet = 0
+    while quiet < 2 and not children.exited():
+        if others_busy(cfg, api_key):
+            quiet = 0
+            if not told:
+                info("\nAnother translation is using this llama-server; "
+                     "it is stopped when that one has finished.")
+                told = True
+        else:
+            quiet += 1
+        time.sleep(1)
+
+
+def translate_files(root, files):
+    """The "Send to" shortcut: translate files with the client; returns those that failed."""
+    cfg = load_config(root)
+    api_key = read_api_key(root) if cfg["expose_llama"] else ""
+    client_py = os.path.join(root, "app", CLIENT_PY)
+    if not os.path.isfile(client_py):
+        raise LauncherError(f"{client_py} not found.\nRun the installer again.")
+    if not files:
+        raise LauncherError("no file was given.\nSelect text or Markdown files in Explorer, "
+                            f"right-click them and choose \"Send to\" > \"{APP_TITLE}\".")
+    port = cfg["llama_port"]
+    state = llama_state(port, api_key)
+    if state == "other":
+        raise LauncherError(f"TCP port {port} (llama-server) is in use by another program.\n"
+                            "Close that program, or run the installer again with another --llama-port.")
+    quiet_error_dialogs()
+    children = None
+    interrupted = False
+    failed = []
+    try:
+        if state == "free":
+            children = Children()
+            log_path = start_llama(root, cfg, api_key, children)
+            wait_health(cfg, children, log_path)
+        elif state == "loading":
+            info("llama-server is being started in another window; waiting for its model ...")
+            limit = HEALTH_TIMEOUT.get(cfg["model"], 1800)
+            start = time.monotonic()
+            while not llama_ready(port):
+                if not port_open(port):
+                    raise LauncherError("that llama-server has stopped; try again.")
+                if time.monotonic() - start > limit:
+                    raise LauncherError(f"llama-server did not become ready within {limit} s.")
+                time.sleep(0.5)
+        else:
+            info("Using the llama-server that is already running (it is left running).")
+        env = client_environment(cfg, api_key)
+        for number, path in enumerate(files, 1):
+            info(f"\n[{number}/{len(files)}] {path}")
+            if os.path.isdir(path):
+                print("Error: this is a folder; select the files in it.", file=sys.stderr, flush=True)
+                failed.append(path)
+                continue
+            status = subprocess.call([sys.executable, client_py, path], env=env)
+            if status == 130:
+                raise KeyboardInterrupt
+            if status != 0:
+                failed.append(path)
+                if children and children.exited():
+                    name, code = children.exited()
+                    raise LauncherError(exit_text(name, code, log_path))
+        if children:
+            wait_idle(cfg, api_key, children)
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
+    finally:
+        if children:
+            children.stop(interrupted)
+    return failed
+
+
 def run(mode, root, open_browser=True, result_file=None):
     cfg = load_config(root)
     api_key = read_api_key(root) if cfg["expose_llama"] else ""
     if check_conflicts(mode, cfg, api_key):
         return attach(cfg, open_browser)
 
-    cmd = llama_command(root, cfg)
+    llama_command(root, cfg)  # fail early if a file is missing
     server_py = os.path.join(root, "app", SERVER_PY)
     if mode != "llama" and not os.path.isfile(server_py):
         raise LauncherError(f"{server_py} not found.\nRun the installer again.")
-    log_path, log_file = open_log()
     web_url = f"http://127.0.0.1:{cfg['web_port']}/"
     llama_url = f"http://127.0.0.1:{cfg['llama_port']}"
     quiet_error_dialogs()
     children = Children()
     interrupted = False
     try:
-        info(f"Starting llama-server ({cfg['backend']}, plamo-3-translate-{cfg['model']}-{cfg['quant']})")
-        info(f"  log: {log_path}")
-        env = dict(os.environ)
-        if api_key:
-            env["LLAMA_API_KEY"] = api_key
-        else:
-            env.pop("LLAMA_API_KEY", None)
-        with log_file:
-            children.start("llama-server", cmd, env, stdout=log_file)
+        log_path = start_llama(root, cfg, api_key, children)
         if mode != "llama":
-            env = dict(os.environ)
-            env["PLAMO3_LLAMA_URL"] = llama_url
-            if api_key:
-                env["PLAMO3_LLAMA_API_KEY"] = api_key
-            else:
-                env.pop("PLAMO3_LLAMA_API_KEY", None)
+            env = client_environment(cfg, api_key)
             web = children.start("the web server", [
                 sys.executable, server_py,
                 "--host", "0.0.0.0" if cfg["listen"] else "127.0.0.1",
@@ -587,8 +699,8 @@ def run(mode, root, open_browser=True, result_file=None):
             info(f"llama-server is running (model \"{MODEL_ALIAS}\").")
         info(f"  llama-server: {llama_url}"
              + ("  (API key required: " + os.path.join(root, API_KEY_NAME) + ")" if api_key else ""))
-        info("  Client      : plamo-3-translate-client FILE   "
-             f"(in \"{APP_TITLE} Command Prompt\")")
+        info(f"  Files       : right-click a file > \"Send to\" > \"{APP_TITLE}\", or")
+        info(f"                {os.path.join(root, CLIENT_BAT)} FILE")
         info("")
         info("Close this window (or press Ctrl-C) to stop.")
         info("")
@@ -635,11 +747,12 @@ def _interrupt(signum, frame):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="PLaMo 3 Translate launcher.", allow_abbrev=False)
-    parser.add_argument("--mode", choices=("webui", "llama", "check"), required=True)
+    parser.add_argument("--mode", choices=("webui", "llama", "translate", "check"), required=True)
     parser.add_argument("--root", default=default_root(), metavar="DIR",
                         help="install directory (default: %(default)s)")
     parser.add_argument("--no-browser", action="store_true", help="do not open the web browser")
     parser.add_argument("--result-file", metavar="FILE", help="check mode: write the result here")
+    parser.add_argument("files", nargs="*", metavar="FILE", help="translate mode: files to translate")
     args = parser.parse_args(argv)
 
     # A console with a legacy code page cannot show every character: escape instead of
@@ -656,8 +769,20 @@ def main(argv=None):
             except (OSError, ValueError):
                 pass
     set_title({"webui": f"{APP_TITLE} Web UI", "llama": f"{APP_TITLE} llama-server",
-               "check": f"{APP_TITLE} check"}[args.mode])
+               "translate": APP_TITLE, "check": f"{APP_TITLE} check"}[args.mode])
     try:
+        if args.mode == "translate":
+            failed = translate_files(os.path.abspath(args.root), args.files)
+            if failed:
+                raise LauncherError(f"{len(failed)} of {len(args.files)} file(s) could not be translated "
+                                    "(see the messages above):\n  " + "\n  ".join(failed))
+            info("\nDone.")
+            if stdin_is_console():
+                info("This window closes in 5 seconds.")
+                time.sleep(5)
+            return 0
+        if args.files:
+            parser.error("files can be given only with --mode translate")
         return run(args.mode, os.path.abspath(args.root), open_browser=not args.no_browser,
                    result_file=args.result_file)
     except KeyboardInterrupt:

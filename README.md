@@ -50,9 +50,13 @@ The Start menu folder "PLaMo 3 Translate" (for all users) contains:
 |---|---|
 | PLaMo 3 Translate Web UI | Starts llama-server and the web server in a console window, waits until the model is loaded and opens `http://127.0.0.1:18080/` in the web browser. Closing the window (or Ctrl-C) stops both. Started a second time, it only opens the browser. |
 | PLaMo 3 Translate llama-server | Starts llama-server only, for `plamo-3-translate-client.py` and other clients of its API. Closing the window stops it. |
-| PLaMo 3 Translate Command Prompt | A command prompt with `plamo-3-translate-client` on `PATH` and the UTF-8 code page (65001). |
 | Uninstall PLaMo 3 Translate | Runs the uninstaller (asks for elevation). |
 
+The "Send to" menu of Explorer gets an entry "PLaMo 3 Translate" (for the user who ran the installer): select one or more text or Markdown files (UTF-8), right-click them and choose "Send to" > "PLaMo 3 Translate". A console window shows the progress, and each translation is written next to its file (`doc.md` → `doc.en.md`, or `doc.ja.md` for a text that is not Japanese; see [below](#plamo-3-translate-clientpy)). An existing translation is not overwritten.
+
+- "Send to" uses the llama-server that is running (Web UI or llama-server shortcut) and leaves it running. If none is running, it starts llama-server itself and stops it when the files are done (it waits if another translation is still using it). While such a llama-server runs, the Web UI and the llama-server shortcut cannot be started.
+- The window closes by itself five seconds after a successful translation; after an error it stays until a key is pressed.
+- "Send to" is a per-user folder. Other users of the PC can copy the shortcut: open `shell:sendto` in Explorer and make a shortcut there to `C:\LLM\PLaMo3Translate\python\python.exe "C:\LLM\PLaMo3Translate\app\plamo-3-translate-launcher.py" --mode translate`.
 - The Web UI starts its own llama-server, so the client can be used while the Web UI is running. If the Web UI is started while "PLaMo 3 Translate llama-server" is running (or the other way round), an error is shown until a key is pressed; close the other window first.
 - The log of llama-server is written to `%LOCALAPPDATA%\PLaMo3Translate\logs\llama-server.log` (the previous one is kept as `llama-server.log.1`). The requests to the web server are shown in the console window.
 - The installed files are read-only for ordinary users.
@@ -84,7 +88,7 @@ GPU selection (untested): `--gpus` takes the device names that `llama-server --l
 
 Listening: by default both servers listen on `127.0.0.1` only. `--listen` lets the web server listen on `0.0.0.0` (all interfaces); it has no login, so anyone who can reach the port can translate. `--expose-llama` lets llama-server listen on `0.0.0.0` and protects it with an API key (see [below](#plamo-3-translate-clientpy)). **The installer never changes the Windows firewall**: other hosts can connect only if you allow the port yourself (Windows may ask about that when a server first listens on `0.0.0.0`).
 
-Uninstalling: `--uninstall` (or the Start menu shortcut) removes the shortcuts, the install directory and the logs of the user who runs it. Logs of other users (`%LOCALAPPDATA%\PLaMo3Translate` in their profiles) and the copy of Python that the `.bat` file keeps in `%TEMP%\plamo-3-translate-installer` are kept.
+Uninstalling: `--uninstall` (or the Start menu shortcut) removes the shortcuts (Start menu, and "Send to" of the user who runs it), the install directory and the logs of the user who runs it. Logs and "Send to" shortcuts of other users (in their profiles) and the copy of Python that the `.bat` file keeps in `%TEMP%\plamo-3-translate-installer` are kept.
 
 ## Models
 
@@ -133,7 +137,7 @@ Personal and non-commercial use is free. Commercial use requires registration wi
 ## Architecture
 
 ```
-Start menu shortcut
+Start menu shortcut ("Send to" runs --mode translate: llama-server if needed, then the client)
   └─ python.exe plamo-3-translate-launcher.py --mode webui      (console window)
        ├─ llama-server.exe            127.0.0.1:28080   model, OpenAI-compatible API
        └─ python.exe plamo-3-translate-server.py
@@ -161,12 +165,13 @@ plamo-3-translate-client.py ──────────> 28080
   app\plamo-3-translate-launcher.py
   app\plamo-3-translate-installer.py        used by the Uninstall shortcut
   plamo-3-translate-client.bat              runs the client with the installed Python
-  command-prompt.bat                        start-up file of the Command Prompt shortcut
   install.json                              settings of the installation
   llama-api-key.txt                         API key (only when llama-server is exposed)
 %LOCALAPPDATA%\PLaMo3Translate\logs\        llama-server log (per user)
 %ProgramData%\Microsoft\Windows\Start Menu\Programs\PLaMo 3 Translate\
-                                            the shortcuts (all users)
+                                            the Start menu shortcuts (all users)
+%APPDATA%\Microsoft\Windows\SendTo\PLaMo 3 Translate.lnk
+                                            the "Send to" shortcut (the installing user)
 ```
 
 Downloads are verified with SHA-256 checksums built into the installer (the Python package, the llama.cpp release assets and pinned Hugging Face revisions of the GGUF files).
@@ -178,15 +183,17 @@ Downloads are verified with SHA-256 checksums built into the installer (the Pyth
 
 ### plamo-3-translate-client.py
 
-A command-line client that translates a plain text or Markdown file (or standard input) through llama-server, keeping the layout of the document. It uses the Python standard library only. The installer puts it into the install directory together with `plamo-3-translate-client.bat`, which runs it with the installed Python; in "PLaMo 3 Translate Command Prompt" that wrapper is on `PATH`. Start "PLaMo 3 Translate llama-server" (or the Web UI) first.
+A command-line client that translates a plain text or Markdown file (or standard input) through llama-server, keeping the layout of the document. It uses the Python standard library only. The installer puts it into the install directory together with `plamo-3-translate-client.bat`, which runs it with the installed Python. The "Send to" entry runs it for the selected files with its defaults; for anything else (options, a glossary, another target language) run the wrapper from a command prompt, with "PLaMo 3 Translate llama-server" (or the Web UI) started first.
 
 ```
+set PATH=C:\LLM\PLaMo3Translate;%PATH%
 plamo-3-translate-client doc.md                       -> doc.en.md (or doc.ja.md)
 plamo-3-translate-client --to en -o out.txt in.txt
+chcp 65001
 echo こんにちは | plamo-3-translate-client -           standard input -> standard output
 ```
 
-- Input and output are UTF-8, also on Windows: files must be saved as UTF-8, and piping text through standard input or output works as expected only in a console with code page 65001, which "PLaMo 3 Translate Command Prompt" sets (`chcp 65001`). In another console, give files instead.
+- Input and output are UTF-8, also on Windows: files must be saved as UTF-8, and piping text through standard input or output works as expected only in a console with code page 65001 (`chcp 65001`). Otherwise give files instead.
 - The wrapper sets `PLAMO3_LLAMA_URL` to the llama-server port of the installation and, when llama-server is exposed, `PLAMO3_LLAMA_API_KEY` from `llama-api-key.txt`, unless these variables are already set.
 - After Ctrl-C, `cmd.exe` asks "Terminate batch job (Y/N)?" because the client is run through a batch file; either answer is fine.
 - From another host, run `plamo-3-translate-client.py` itself with Python 3 and `--url http://<this PC>:28080` (this needs `--expose-llama`, the API key and the port opened in the firewall).
@@ -224,6 +231,6 @@ echo こんにちは | plamo-3-translate-client -           standard input -> st
 ## Development
 
 - `python3 -m unittest discover tests` runs the tests on Linux (Python 3.12 or later, standard library only). `tests/stub_llama_server.py` stands in for llama-server.
-- `tests\windows-check.bat` checks an installation on Windows: install first, close the PLaMo 3 Translate windows and double-click it. It starts and stops the servers several times (also through the Start menu shortcuts: console windows appear and a browser tab opens), runs the client, re-runs the installer and, if you say so, tests `--expose-llama` and uninstalling followed by a fresh installation; the result is written to `%USERPROFILE%\plamo-3-translate-check.log`.
+- `tests\windows-check.bat` checks an installation on Windows: install first, close the PLaMo 3 Translate windows and double-click it. It starts and stops the servers several times (also through the Start menu and "Send to" shortcuts: console windows appear and a browser tab opens), runs the client, re-runs the installer and, if you say so, tests `--expose-llama` and uninstalling followed by a fresh installation; the result is written to `%USERPROFILE%\plamo-3-translate-check.log`.
 - File encodings: `.bat` files are ASCII with CRLF line ends; `.py` files are UTF-8 without BOM.
 - [plamo-3-translate-server.md](plamo-3-translate-server.md) and [plamo-3-translate-client.md](plamo-3-translate-client.md) are the handover notes for the two files that come from plamo-3-translate-installer-for-resolute, with the checks that are still to be done on Windows.

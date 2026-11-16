@@ -8,7 +8,7 @@ writes what it saw to a log file to send back to the developer.  Two optional pa
 asked about at the start: --expose-llama (Windows may show a firewall dialog) and
 uninstalling.
 
-It also starts the Start menu shortcuts themselves (console windows appear and a browser
+It also starts the Start menu and "Send to" shortcuts themselves (console windows appear and a browser
 tab opens; leave them alone) and closes their windows.
 
 Not covered (needs a person): the questions of an interactive installation, the UAC
@@ -241,7 +241,7 @@ def launcher_pids(mode):
 
 
 def kill_launchers():
-    for mode in ("webui", "llama"):
+    for mode in ("webui", "llama", "translate"):
         for pid in launcher_pids(mode):
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
 
@@ -548,14 +548,14 @@ def checks_shortcuts(inst):
                            "\"$($s.TargetPath)`t$($s.Arguments)`t$($s.WorkingDirectory)\"\n")
         lines = [line for line in powershell(script).splitlines() if line.strip()]
         detail_only("\n".join(lines))
-        expect(len(lines) == 4, f"expected four shortcuts: {lines}")
+        expect(len(lines) == 3, f"expected three shortcuts: {lines}")
         for line in lines:
             target, arguments, workdir = (line.split("\t") + ["", ""])[:3]
             expect(os.path.isfile(target), f"the target does not exist: {target}")
             expect(os.path.isdir(workdir), f"the working directory does not exist: {workdir}")
             for quoted in re.findall(r'"([^"]+\.(?:py|bat))"', arguments):
                 expect(os.path.isfile(quoted), f"a file in the arguments does not exist: {quoted}")
-    check("Start menu: four shortcuts with existing targets", properties)
+    check("Start menu: three shortcuts with existing targets", properties)
 
     def close_window(mode):
         """Close the console window of the launcher, as the X button does (taskkill
@@ -611,16 +611,90 @@ def checks_shortcuts(inst):
             subprocess.run(["taskkill", "/F", "/IM", "llama-server.exe"], capture_output=True)
             wait_until(lambda: ports_closed(inst), 15)
 
-    def command_prompt():
-        prompt = os.path.join(inst.destdir, "command-prompt.bat")
-        command = f'cmd.exe /d /s /c "call "{prompt}" & chcp & where plamo-3-translate-client & cd"'
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, cwd=inst.destdir)
+
+def sendto_lnk():
+    return os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "SendTo", "PLaMo 3 Translate.lnk")
+
+
+def checks_sendto(inst, workdir):
+    """The "Send to" shortcut: --mode translate."""
+    def source(name):
+        path = os.path.join(workdir, name)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(JAPANESE + "\n")
+        return path
+
+    def translate(*files):
+        result = subprocess.run([inst.python, inst.launcher, "--mode", "translate", *files],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=1800, cwd=inst.destdir)
         output = decode(result.stdout) + decode(result.stderr)
         detail_only(output)
-        expect("65001" in output, f"the code page is not 65001:\n{tail(output)}")
-        expect(inst.client_bat.lower() in output.lower(), f"the client is not on PATH:\n{tail(output)}")
-        expect("plamo-3-translate-client FILE" in output, f"the usage hint is missing:\n{tail(output)}")
-    check("Command Prompt shortcut: UTF-8 code page, client on PATH", command_prompt)
+        return result.returncode, output
+
+    def properties():
+        script = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut('" + sendto_lnk().replace("'", "''")
+                  + "'); \"$($s.TargetPath)`t$($s.Arguments)\"\n")
+        expect(os.path.isfile(sendto_lnk()), f"{sendto_lnk()} does not exist")
+        target, _, arguments = powershell(script).strip().partition("\t")
+        expect(os.path.isfile(target), f"the target does not exist: {target}")
+        expect(arguments.endswith("--mode translate") and inst.launcher.lower() in arguments.lower(),
+               f"unexpected arguments: {arguments}")
+        return sendto_lnk()
+    check("Send to: the shortcut exists", properties)
+
+    def alone():
+        expect(ports_closed(inst), "a port is in use before the check")
+        status, output = translate(source("sendto-a.txt"), source("sendto-b.md"))
+        expect(status == 0, f"exit status {status}:\n{tail(output)}")
+        expect("Starting llama-server" in output, tail(output))
+        for name in ("sendto-a.en.txt", "sendto-b.en.md"):
+            with open(os.path.join(workdir, name), encoding="utf-8") as f:
+                expect(f.read().strip(), f"{name} is empty")
+        expect(wait_until(lambda: ports_closed(inst), 20), "llama-server was not stopped afterwards")
+    check("Send to: starts llama-server, translates two files, stops llama-server", alone)
+
+    def existing_output():
+        status, output = translate(os.path.join(workdir, "sendto-a.txt"))
+        expect(status == 1, f"exit status {status}:\n{tail(output)}")
+        expect("could not be translated" in output, tail(output))
+        expect(wait_until(lambda: ports_closed(inst), 20), "llama-server was not stopped afterwards")
+        return tail(output, 12).replace("\n", " | ")
+    check("Send to: an existing translation is not overwritten (error, status 1)", existing_output)
+
+    def with_running_server():
+        launcher = Launcher(inst, "llama", workdir)
+        try:
+            launcher.wait_ready()
+            status, output = translate(source("sendto-c.txt"))
+            expect(status == 0, f"exit status {status}:\n{tail(output)}")
+            expect("already running" in output and "Starting llama-server" not in output, tail(output))
+            expect(os.path.isfile(os.path.join(workdir, "sendto-c.en.txt")), "no output file")
+            time.sleep(4)
+            health = http_request(inst.llama_port, "GET", "/health", timeout=5)
+            expect(health and health[0] == 200, "the llama-server that was running before was stopped")
+        finally:
+            launcher.stop()
+        expect(wait_until(lambda: ports_closed(inst), 20), "a port is still open")
+    check("Send to: uses a running llama-server and leaves it running", with_running_server)
+
+    def through_the_shortcut():
+        # As Explorer does it: the shortcut with the file as its parameter.  A console
+        # window opens and closes by itself.
+        path = source("sendto-d.txt")
+        target = os.path.join(workdir, "sendto-d.en.txt")
+        result = ctypes.windll.shell32.ShellExecuteW(None, None, sendto_lnk(), f'"{path}"', None, 1)
+        if result <= 32:
+            raise Skip(f"the shortcut could not be started from a program (ShellExecute {result}); try it by hand")
+        if not wait_until(lambda: os.path.isfile(target), 600, step=1):
+            kill_launchers()
+            raise Skip("no translation appeared; this way of starting a shortcut with a file may not work: "
+                       "try \"Send to\" by hand")
+        expect(wait_until(lambda: ports_closed(inst) and not launcher_pids("translate"), 60),
+               "the window or llama-server did not go away after the translation")
+    try:
+        check("Send to: started through the shortcut file itself", through_the_shortcut)
+    finally:
+        kill_launchers()
 
 
 def checks_installer(inst, workdir):
@@ -702,9 +776,10 @@ def checks_uninstall(inst):
 
     def shortcuts_present():
         names = sorted(os.listdir(menu))
-        expect(len([n for n in names if n.endswith(".lnk")]) == 4, f"unexpected shortcuts: {names}")
+        expect(len([n for n in names if n.endswith(".lnk")]) == 3, f"unexpected shortcuts: {names}")
+        expect(os.path.isfile(sendto_lnk()), "the Send to shortcut is missing")
         return ", ".join(names)
-    check("Start menu: four shortcuts", shortcuts_present)
+    check("Start menu: three shortcuts, and Send to", shortcuts_present)
 
     def uninstall():
         # As the Uninstall shortcut does it: with the Python inside the install directory,
@@ -715,6 +790,7 @@ def checks_uninstall(inst):
         detail_only(output)
         expect(result.returncode == 0, f"exit status {result.returncode}:\n{tail(output)}")
         expect(not os.path.exists(menu), "the Start menu folder is still there")
+        expect(not os.path.exists(sendto_lnk()), "the Send to shortcut is still there")
         expect(wait_until(lambda: not os.path.exists(inst.destdir), 90, step=1),
                f"{inst.destdir} is still there after 90 s: {os.listdir(inst.destdir) if os.path.isdir(inst.destdir) else ''}")
         expect(os.path.isdir(os.path.dirname(inst.destdir)), "the parent directory was removed too")
@@ -740,7 +816,8 @@ def checks_uninstall(inst):
             expect(text in output, f"missing in the output: {text!r}\n{tail(output, 25)}")
         time.sleep(40)  # a leftover of the uninstaller must not remove the new installation
         expect(os.path.isfile(inst.python) and os.path.isfile(inst.launcher), "the new installation is incomplete")
-        expect(len([n for n in os.listdir(menu) if n.endswith(".lnk")]) == 4, "the shortcuts are missing")
+        expect(len([n for n in os.listdir(menu) if n.endswith(".lnk")]) == 3, "the shortcuts are missing")
+        expect(os.path.isfile(sendto_lnk()), "the Send to shortcut is missing")
         lines, read_only = users_rights(inst.destdir)
         expect(read_only, f"Users have more than read and execute: {lines}")
     check("fresh non-interactive installation (downloads everything again)", reinstall)
@@ -795,6 +872,7 @@ def main():
             checks_llama_mode(inst, workdir)
             checks_webui_mode(inst, workdir)
             checks_shortcuts(inst)
+            checks_sendto(inst, workdir)
             checks_installer(inst, workdir)
             if expose:
                 checks_expose(inst, workdir)

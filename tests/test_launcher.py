@@ -209,5 +209,87 @@ class Conflicts(LauncherCase):
         self.assertTrue(wait_until(lambda: not port_open(cfg["web_port"]) and not port_open(cfg["llama_port"])))
 
 
+class Translate(LauncherCase):
+    """The "Send to" shortcut: --mode translate FILE..."""
+
+    def source(self, name="doc.txt", text="こんにちは\n"):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def test_starts_llama_server_and_stops_it_afterwards(self):
+        cfg = make_install_tree(self.root)
+        first, second = self.source("a.txt"), self.source("b.md")
+        status, out, err = self.run_launcher("translate", first, second)
+        self.assertEqual(status, 0, err)
+        self.assertIn("Starting llama-server", out)
+        self.assertIn("[2/2]", out)
+        for name in ("a.en.txt", "b.en.md"):
+            with open(os.path.join(self.tmp.name, name), encoding="utf-8") as f:
+                self.assertEqual(f.read(), "Hello\n")
+        self.assertTrue(wait_until(lambda: not port_open(cfg["llama_port"])))
+        self.assertFalse(port_open(cfg["web_port"]))
+
+    def test_uses_a_running_llama_server_and_leaves_it(self):
+        cfg = make_install_tree(self.root, expose_llama="yes")
+        first = self.start("llama")
+        self.assertTrue(wait_until(lambda: launcher.llama_ready(cfg["llama_port"])))
+        status, out, err = self.run_launcher("translate", self.source())
+        self.assertEqual(status, 0, err)
+        self.assertIn("already running", out)
+        self.assertNotIn("Starting llama-server", out)
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp.name, "doc.en.txt")))
+        self.assertTrue(launcher.llama_ready(cfg["llama_port"]))
+        self.assertIsNone(first.poll())
+        self.interrupt(first)
+
+    def test_waits_for_a_llama_server_that_is_loading(self):
+        cfg = make_install_tree(self.root)
+        first = self.start("llama", STUB_LOAD_SECONDS="3")
+        self.assertTrue(wait_until(lambda: port_open(cfg["llama_port"])))
+        status, out, err = self.run_launcher("translate", self.source())
+        self.assertEqual(status, 0, err)
+        self.assertIn("waiting for its model", out)
+        self.assertIsNone(first.poll())
+        self.interrupt(first)
+
+    def test_failed_files_are_reported(self):
+        cfg = make_install_tree(self.root)
+        good = self.source()
+        missing = os.path.join(self.tmp.name, "missing.txt")
+        status, out, err = self.run_launcher("translate", missing, self.tmp.name, good)
+        self.assertEqual(status, 1)
+        self.assertIn("2 of 3 file(s) could not be translated", err)
+        self.assertIn("this is a folder", err)
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp.name, "doc.en.txt")))
+        self.assertTrue(wait_until(lambda: not port_open(cfg["llama_port"])))
+        # The output exists now: the client does not overwrite it.
+        status, out, err = self.run_launcher("translate", good)
+        self.assertEqual(status, 1)
+        self.assertIn("1 of 1 file(s)", err)
+
+    def test_no_file_and_foreign_port(self):
+        cfg = make_install_tree(self.root)
+        status, out, err = self.run_launcher("translate")
+        self.assertEqual(status, 1)
+        self.assertIn("Send to", err)
+        with socket.socket() as other:
+            other.bind(("127.0.0.1", cfg["llama_port"]))
+            other.listen()
+            other.settimeout(0.1)
+            status, out, err = self.run_launcher("translate", self.source())
+            self.assertEqual(status, 1)
+            self.assertIn("in use by another program", err)
+        status, out, err = self.run_launcher("webui", "file.txt")
+        self.assertEqual(status, 2)
+
+    def test_waits_for_another_translation_before_stopping(self):
+        make_install_tree(self.root)
+        status, out, err = self.run_launcher("translate", self.source(), STUB_BUSY_SECONDS="4")
+        self.assertEqual(status, 0, err)
+        self.assertIn("Another translation is using this llama-server", out)
+
+
 if __name__ == "__main__":
     unittest.main()

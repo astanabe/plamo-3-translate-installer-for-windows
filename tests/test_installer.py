@@ -115,8 +115,7 @@ class PinnedFiles(unittest.TestCase):
                          "4f672106b847200bfdc0f6af6c321cd94eba1aed/plamo-3-translate-2b-Q4_K_M.gguf")
 
     def test_generated_batch_files_are_ascii(self):
-        for text in (ins.client_bat("28080"), ins.prompt_bat()):
-            self.assertTrue(text.isascii())
+        self.assertTrue(ins.client_bat("28080").isascii())
         self.assertIn('"%~dp0python\\python.exe" "%~dp0app\\plamo-3-translate-client.py" %*', ins.client_bat("28080"))
         self.assertIn("http://127.0.0.1:28081", ins.client_bat("28081"))
 
@@ -508,21 +507,27 @@ class Devices(TempCase):
 class WindowsCommands(unittest.TestCase):
     def test_shortcuts(self):
         destdir = r"C:\LLM\PLaMo3Translate"
-        with mock.patch.dict(os.environ, {"ComSpec": r"C:\Windows\System32\cmd.exe", "SystemRoot": r"C:\Windows"}), \
-                mock.patch.object(ins.os.path, "join", ins.ntpath.join):
+        environ = {"SystemRoot": r"C:\Windows", "ProgramData": r"C:\ProgramData",
+                   "APPDATA": r"C:\Users\me\AppData\Roaming"}
+        menu = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\PLaMo 3 Translate" + "\\"
+        with mock.patch.dict(os.environ, environ), mock.patch.object(ins.os.path, "join", ins.ntpath.join):
             items = ins.shortcut_items(destdir)
-            script = ins.shortcut_script(r"C:\ProgramData\Menu\PLaMo 3 Translate", items)
+            script = ins.shortcut_script(items)
         self.assertEqual([item[0] for item in items],
-                         ["PLaMo 3 Translate Web UI", "PLaMo 3 Translate llama-server",
-                          "PLaMo 3 Translate Command Prompt", "Uninstall PLaMo 3 Translate"])
+                         [menu + "PLaMo 3 Translate Web UI.lnk", menu + "PLaMo 3 Translate llama-server.lnk",
+                          menu + "Uninstall PLaMo 3 Translate.lnk",
+                          r"C:\Users\me\AppData\Roaming\Microsoft\Windows\SendTo\PLaMo 3 Translate.lnk"])
         self.assertEqual(items[0][1], r"C:\LLM\PLaMo3Translate\python\python.exe")
         self.assertEqual(items[0][2], r'"C:\LLM\PLaMo3Translate\app\plamo-3-translate-launcher.py" --mode webui')
-        self.assertEqual(items[2][2], r'/k ""C:\LLM\PLaMo3Translate\command-prompt.bat""')
-        self.assertEqual(items[3][2], r'"C:\LLM\PLaMo3Translate\app\plamo-3-translate-installer.py" --uninstall '
+        self.assertEqual(items[2][2], r'"C:\LLM\PLaMo3Translate\app\plamo-3-translate-installer.py" --uninstall '
                                       r'--destdir "C:\LLM\PLaMo3Translate" --elevate --pause')
-        self.assertIn(r"$s = $shell.CreateShortcut('C:\ProgramData\Menu\PLaMo 3 Translate\PLaMo 3 Translate Web UI.lnk')",
-                      script)
+        self.assertEqual(items[3][2], r'"C:\LLM\PLaMo3Translate\app\plamo-3-translate-launcher.py" --mode translate')
+        self.assertIn("$s = $shell.CreateShortcut('" + menu + "PLaMo 3 Translate Web UI.lnk')", script)
         self.assertEqual(script.count("$s.Save()"), 4)
+        self.assertNotIn("Command Prompt", script)
+        with mock.patch.dict(os.environ, environ), mock.patch.object(ins.os.path, "join", ins.ntpath.join):
+            del os.environ["APPDATA"]
+            self.assertEqual(len(ins.shortcut_items(destdir)), 3)
         self.assertEqual(ins.ps_quote("it's"), "'it''s'")
 
     def test_permissions(self):
@@ -577,12 +582,14 @@ class EndToEnd(TempCase):
         self.addCleanup(mock.patch.stopall)
         environ = mock.patch.dict(os.environ, {"ProgramData": os.path.join(self.dir, "ProgramData"),
                                                "LOCALAPPDATA": os.path.join(self.dir, "LocalAppData"),
+                                               "APPDATA": os.path.join(self.dir, "AppData"),
                                                "STUB_N_CTX": "30000"})
         environ.start()
         self.addCleanup(environ.stop)
         self.web_port, self.llama_port = free_port(), free_port()
         self.menu = os.path.join(self.dir, "ProgramData", "Microsoft", "Windows", "Start Menu", "Programs",
                                  "PLaMo 3 Translate")
+        self.sendto = os.path.join(self.dir, "AppData", "Microsoft", "Windows", "SendTo")
 
     def install(self, *argv):
         inst = make_installer("--destdir", self.destdir, *argv)
@@ -605,7 +612,7 @@ class EndToEnd(TempCase):
             "version": 1, "destdir": self.destdir, "model": "0.8b", "quant": "Q4_K_M", "backend": "cpu", "gpus": "",
             "ctx_size": "auto", "web_port": self.web_port, "llama_port": self.llama_port, "listen": "no",
             "expose_llama": "no", "llama_tag": "b12366"})
-        for name in (".plamo-3-translate-installation", "plamo-3-translate-client.bat", "command-prompt.bat",
+        for name in (".plamo-3-translate-installation", "plamo-3-translate-client.bat",
                      "app/plamo-3-translate-server.py", "app/plamo-3-translate-client.py",
                      "app/plamo-3-translate-launcher.py", "app/plamo-3-translate-installer.py",
                      "llama.cpp/b12366-cpu/llama-server.exe", "llama.cpp/b12366-cpu/.installed",
@@ -626,7 +633,14 @@ class EndToEnd(TempCase):
                                             (self.destdir, True)])
         self.assertEqual(len(self.scripts), 1)
         self.assertIn("PLaMo 3 Translate Web UI.lnk", self.scripts[0])
+        self.assertIn(os.path.join(self.sendto, "PLaMo 3 Translate.lnk"), self.scripts[0])
         self.assertTrue(os.path.isdir(self.menu))
+        self.assertTrue(os.path.isdir(self.sendto))
+        # A file of an earlier version is removed on update.
+        with open(os.path.join(self.destdir, "command-prompt.bat"), "w") as f:
+            f.write("old")
+        with open(os.path.join(self.sendto, "PLaMo 3 Translate.lnk"), "w") as f:
+            f.write("stands for the shortcut that PowerShell would have written")
         # The servers of the translation test are gone.
         self.assertTrue(wait_until(lambda: not port_open(self.web_port) and not port_open(self.llama_port)))
         requests = len(self.server.requests)
@@ -637,6 +651,7 @@ class EndToEnd(TempCase):
         self.assertEqual(inst.val["model"], "0.8b")
         self.assertEqual(inst.val["web_port"], str(self.web_port))
         self.assertIn("llama.cpp b12366 (cpu) is already installed", out)
+        self.assertFalse(os.path.exists(os.path.join(self.destdir, "command-prompt.bat")))
         self.assertIn("Reusing plamo-3-translate-0.8b-Q4_K_M.gguf", out)
         self.assertEqual(len(self.server.requests), requests)
 
@@ -672,6 +687,8 @@ class EndToEnd(TempCase):
         self.assertFalse(os.path.exists(self.destdir))
         self.assertFalse(os.path.exists(self.menu))
         self.assertFalse(os.path.exists(logs))
+        self.assertFalse(os.path.exists(os.path.join(self.sendto, "PLaMo 3 Translate.lnk")))
+        self.assertTrue(os.path.isdir(self.sendto))
         self.assertTrue(os.path.isdir(os.path.join(self.dir, "LLM")))
 
     def test_ports_in_use_and_foreign_directory(self):
