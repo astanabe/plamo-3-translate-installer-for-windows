@@ -1,0 +1,5 @@
+# Batch files are stored with their CRLF line ends as they are (no conversion), so that
+# every way of getting the files (clone, ZIP download, raw file) gives CRLF: cmd.exe
+# mishandles LF-only batch files.
+*.bat -text
+*.py text eol=lf
