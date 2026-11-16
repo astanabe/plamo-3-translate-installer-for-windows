@@ -660,7 +660,7 @@ class EndToEnd(TempCase):
                                               "--expose-llama", "--listen", "--accept-license", "--yes")
         self.assertIsNone(result, err + out)
         self.assertIn("Deleted plamo-3-translate-0.8b-Q4_K_M.gguf", out)
-        self.assertIn("does not use any GPU", err)
+        self.assertIn("does not find any GPU with the vulkan backend", err)
         self.assertEqual(os.listdir(os.path.join(self.destdir, "models")), ["plamo-3-translate-0.8b-Q4_0.gguf"])
         self.assertEqual(os.listdir(os.path.join(self.destdir, "llama.cpp")), ["b12366-vulkan"])
         config = self.config()

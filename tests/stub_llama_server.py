@@ -11,6 +11,9 @@ It accepts the command line the launcher and the installer use, and answers /hea
     STUB_BUSY_SECONDS   seconds after start-up during which /slots reports a busy slot
     STUB_DEVICES        output lines of --list-devices, separated by "|"
     STUB_ARGS_FILE      write the command line (JSON) to this file at start-up
+    STUB_GPU_LINES      log lines printed only with -lv 4 (as llama-server b12366 does with
+                        "using device ..."), separated by "|", followed by a "load_tensors:" line
+    STUB_PROBE_ARGS_FILE  with -lv 4, write the command line here instead of STUB_ARGS_FILE
     LLAMA_API_KEY       when set, requests other than /health need "Authorization: Bearer <key>"
 """
 
@@ -35,6 +38,10 @@ def main():
     parser.add_argument("--jinja", action="store_true")
     parser.add_argument("--no-prefill-assistant", action="store_true")
     parser.add_argument("--alias", default="stub")
+    parser.add_argument("-lv", type=int, dest="verbosity", default=3)
+    parser.add_argument("-ngl")
+    parser.add_argument("-fit")
+    parser.add_argument("--no-warmup", action="store_true")
     args = parser.parse_args()
 
     if args.version:
@@ -47,13 +54,19 @@ def main():
             print("  " + line)
         return 0
 
-    if os.environ.get("STUB_ARGS_FILE"):
-        with open(os.environ["STUB_ARGS_FILE"], "w", encoding="utf-8") as f:
+    args_file = os.environ.get("STUB_ARGS_FILE")
+    if args.verbosity >= 4:
+        args_file = os.environ.get("STUB_PROBE_ARGS_FILE")
+    if args_file:
+        with open(args_file, "w", encoding="utf-8") as f:
             json.dump({"argv": sys.argv[1:], "api_key": os.environ.get("LLAMA_API_KEY", "")}, f)
     print(f"stub llama-server: model {args.model}", flush=True)
     if not args.model or not os.path.isfile(args.model):
         print("stub llama-server: model file not found", flush=True)
         return 1
+    if args.verbosity >= 4:
+        for line in filter(None, os.environ.get("STUB_GPU_LINES", "").split("|")):
+            print("0.00.123.456 I llama_model_load_from_file_impl: " + line, flush=True)
 
     load_seconds = float(os.environ.get("STUB_LOAD_SECONDS", "0"))
     exit_status = os.environ.get("STUB_EXIT_STATUS")
@@ -143,6 +156,8 @@ def main():
             os._exit(int(exit_status))
         threading.Timer(load_seconds, die).start()
     print(f"stub llama-server: listening on {args.host}:{args.port}", flush=True)
+    if args.verbosity >= 4:
+        print("load_tensors: loading model tensors, this can take a while...", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

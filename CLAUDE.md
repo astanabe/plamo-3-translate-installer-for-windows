@@ -60,7 +60,7 @@ The installer and the launcher are each a single file and share no module (the e
 
 ## Testing on Windows
 
-Tests on real Windows are done by the user, for now with the `cpu` backend only (0.8B or 2B is the practical choice there). `vulkan`, `cuda12`, `cuda13` and GPU selection (`--gpus`, by the device names of `llama-server --list-devices`, passed with `--device`) are implemented but untested until a machine with a GPU is available: `README.md` says so, and the `cpu` path must stay independent of GPU detection (a failure to detect or list GPUs must not stop a `cpu` installation; with `--backend cpu` nothing GPU-related is run, and a test checks that).
+Tests on real Windows are done by the user, for now with the `cpu` backend only (0.8B or 2B is the practical choice there). `vulkan`, `cuda12`, `cuda13` and GPU selection (`--gpus`, by the device names of `llama-server --list-devices`, passed with `--device`) are implemented but untested until a machine with a GPU is available: `README.md` says so, and the `cpu` path must stay independent of GPU detection (a failure to detect or list GPUs must not stop a `cpu` installation; with `--backend cpu` nothing GPU-related is run, and a test checks that). llama-server b12366 logs `using device ...` only with `-lv 4`, so the launcher's check mode finds the GPUs with a test run of its own before the real start (`probe_gpus`: `-lv 4 -ngl 0 -fit off -c 512 --no-warmup` on a free port, stopped at the first `load_tensors:` line or after 120 s; taken from `probe_gpus` of the resolute installer, commit `021cc0b`, where it was tried on a real GPU). A probe that finds nothing only makes the installer warn; it never fails the installation.
 
 ## filesfromotherrepo/
 

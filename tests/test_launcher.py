@@ -81,10 +81,26 @@ class CheckMode(LauncherCase):
             self.assertIn("stub llama-server: listening", f.read())
 
     def test_check_with_api_key(self):
-        make_install_tree(self.root, expose_llama="yes", ctx_size="8192", backend="vulkan", gpus="Vulkan1")
+        cfg = make_install_tree(self.root, expose_llama="yes", ctx_size="8192", backend="vulkan", gpus="Vulkan1")
         args_file = os.path.join(self.tmp.name, "args.json")
-        status, out, err = self.run_launcher("check", STUB_ARGS_FILE=args_file)
+        probe_file = os.path.join(self.tmp.name, "probe.json")
+        result_file = os.path.join(self.tmp.name, "result.json")
+        device = "using device Vulkan1 (Some GPU) (unknown id) - 8000 MiB free"
+        status, out, err = self.run_launcher(
+            "check", "--result-file", result_file, STUB_ARGS_FILE=args_file,
+            STUB_PROBE_ARGS_FILE=probe_file, STUB_GPU_LINES=device)
         self.assertEqual(status, 0, err)
+        # The GPUs come from a test run with -lv 4 on another port, without the API key.
+        with open(result_file, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["gpu_lines"], [device])
+        with open(probe_file, encoding="utf-8") as f:
+            probe = json.load(f)
+        self.assertEqual(probe["api_key"], "")
+        argv = probe["argv"]
+        self.assertEqual(argv[argv.index("--host") + 1], "127.0.0.1")
+        self.assertNotEqual(argv[argv.index("--port") + 1], str(cfg["llama_port"]))
+        self.assertEqual(argv[argv.index("--device") + 1], "Vulkan1")
+        self.assertEqual(argv[-9:], ["-lv", "4", "-ngl", "0", "-fit", "off", "-c", "512", "--no-warmup"])
         self.assertIn("rejects requests without the API key", out)
         with open(args_file, encoding="utf-8") as f:
             seen = json.load(f)
@@ -94,6 +110,26 @@ class CheckMode(LauncherCase):
         self.assertEqual(argv[argv.index("-c") + 1], "8192")
         self.assertEqual(argv[argv.index("--device") + 1], "Vulkan1")
         self.assertEqual(argv[-4:], ["--jinja", "--no-prefill-assistant", "--alias", "plamo-3-translate"])
+        self.assertNotIn("-lv", argv)
+
+    def test_gpu_probe_only_in_check_mode_with_a_gpu_backend(self):
+        cfg = make_install_tree(self.root)  # cpu
+        probe_file = os.path.join(self.tmp.name, "probe.json")
+        result_file = os.path.join(self.tmp.name, "result.json")
+        status, out, err = self.run_launcher("check", "--result-file", result_file,
+                                             STUB_PROBE_ARGS_FILE=probe_file, STUB_GPU_LINES="using device X")
+        self.assertEqual(status, 0, err)
+        self.assertFalse(os.path.exists(probe_file))
+        with open(result_file, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["gpu_lines"], [])
+
+    def test_gpu_probe_without_device_lines(self):
+        make_install_tree(self.root, backend="vulkan")
+        result_file = os.path.join(self.tmp.name, "result.json")
+        status, out, err = self.run_launcher("check", "--result-file", result_file)
+        self.assertEqual(status, 0, err)
+        with open(result_file, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["gpu_lines"], [])
 
     def test_llama_server_dies_while_loading(self):
         make_install_tree(self.root)

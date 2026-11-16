@@ -20,7 +20,8 @@ reads its settings from install.json in the install directory.
           shortcut) is used and left running; otherwise llama-server is started here
           and stopped when the files are done.
   check   used by the installer: start both, translate a test sentence through the web
-          server, write the result to --result-file and stop.
+          server, write the result to --result-file and stop.  With a GPU backend,
+          llama-server is first run for a moment with -lv 4 to see which GPUs it uses.
 
 Options:
   --root DIR          install directory (default: the parent of this file's directory)
@@ -40,6 +41,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 
@@ -59,6 +61,7 @@ HEALTH_TIMEOUT = {"0.8b": 180, "2b": 300, "8b": 900, "31b": 1800}
 WEB_START_TIMEOUT = 30
 TEST_TEXT = "こんにちは"
 TEST_TIMEOUT = 600
+GPU_PROBE_TIMEOUT = 120
 STATUS_DLL_NOT_FOUND = 0xC0000135
 VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
@@ -120,22 +123,30 @@ def log_dir():
     return os.path.join(base, "PLaMo3Translate", "logs")
 
 
-def llama_command(root, cfg):
+def llama_command(root, cfg, probe_port=None):
+    """The command line of llama-server; with probe_port, that of the test run of
+    probe_gpus (same binary, model and devices)."""
     exe = os.path.join(root, "llama.cpp", f"{cfg['llama_tag']}-{cfg['backend']}", LLAMA_SERVER_EXE)
     model = os.path.join(root, "models", f"plamo-3-translate-{cfg['model']}-{cfg['quant']}.gguf")
     for path in (exe, model):
         if not os.path.isfile(path):
             raise LauncherError(f"{path} not found.\nRun the installer again.")
-    cmd = [exe, "--model", model,
-           "--host", "0.0.0.0" if cfg["expose_llama"] else "127.0.0.1",
-           "--port", str(cfg["llama_port"])]
-    # Without -c, llama-server uses the model maximum and reduces it to fit the memory.
-    if cfg["ctx_size"] != "auto":
-        cmd += ["-c", cfg["ctx_size"]]
+    if probe_port is None:
+        cmd = [exe, "--model", model,
+               "--host", "0.0.0.0" if cfg["expose_llama"] else "127.0.0.1",
+               "--port", str(cfg["llama_port"])]
+        # Without -c, llama-server uses the model maximum and reduces it to fit the memory.
+        if cfg["ctx_size"] != "auto":
+            cmd += ["-c", cfg["ctx_size"]]
+    else:
+        cmd = [exe, "--model", model, "--host", "127.0.0.1", "--port", str(probe_port)]
     # GPU selection by llama.cpp device name (see --list-devices); untested on real GPUs.
     if cfg["backend"] != "cpu" and cfg["gpus"] not in ("", "all"):
         cmd += ["--device", cfg["gpus"]]
-    cmd += ["--jinja", "--no-prefill-assistant", "--alias", MODEL_ALIAS]
+    if probe_port is None:
+        cmd += ["--jinja", "--no-prefill-assistant", "--alias", MODEL_ALIAS]
+    else:
+        cmd += ["-lv", "4", "-ngl", "0", "-fit", "off", "-c", "512", "--no-warmup"]
     return cmd
 
 
@@ -558,6 +569,50 @@ def start_llama(root, cfg, api_key, children):
     return log_path
 
 
+def probe_gpus(root, cfg, children):
+    """The "using device ..." lines of llama-server, i.e. the GPUs it uses.
+
+    llama-server logs them ("using device <name> (<description>) ... - <N> MiB free") only
+    with -lv 4, which is too noisy for normal use (about five times the lines per
+    request).  So llama-server is run here once with -lv 4 and stopped when it begins to
+    load the tensors: the lines come before that.  It listens on a port of its own
+    (llama-server binds before it loads the model) and offloads nothing (-ngl 0), so it
+    needs no free GPU memory beyond what the backend takes to initialize.  A failure
+    here is not an error: the real start that follows reports what is wrong.
+    Untested on real GPUs.
+    """
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = dict(os.environ)
+    env.pop("LLAMA_API_KEY", None)
+    info("Checking which GPUs llama-server uses (a short test run)")
+    lines = []
+    try:
+        proc = children.start("llama-server", llama_command(root, cfg, probe_port=port), env,
+                              stdout=subprocess.PIPE)
+    except LauncherError:
+        return lines
+
+    def read():
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", errors="replace")
+            if "using device" in line:
+                lines.append(line[line.index("using device"):].strip())
+            if "load_tensors:" in line:
+                break
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    try:
+        reader.join(GPU_PROBE_TIMEOUT)
+    finally:
+        children.stop()  # ends the reader too, if it is still waiting: the pipe closes
+        reader.join(10)
+        proc.stdout.close()
+    return list(lines)
+
+
 def client_environment(cfg, api_key):
     """Environment of plamo-3-translate-server.py and plamo-3-translate-client.py."""
     env = dict(os.environ)
@@ -674,7 +729,10 @@ def run(mode, root, open_browser=True, result_file=None):
     quiet_error_dialogs()
     children = Children()
     interrupted = False
+    gpu_lines = []
     try:
+        if mode == "check" and cfg["backend"] != "cpu":
+            gpu_lines = probe_gpus(root, cfg, children)
         log_path = start_llama(root, cfg, api_key, children)
         if mode != "llama":
             env = client_environment(cfg, api_key)
@@ -686,7 +744,7 @@ def run(mode, root, open_browser=True, result_file=None):
         wait_health(cfg, children, log_path)
 
         if mode == "check":
-            return check(cfg, api_key, log_path, result_file)
+            return check(cfg, api_key, gpu_lines, result_file)
 
         info("")
         if mode == "webui":
@@ -718,7 +776,7 @@ def run(mode, root, open_browser=True, result_file=None):
         children.stop(interrupted)
 
 
-def check(cfg, api_key, log_path, result_file):
+def check(cfg, api_key, gpu_lines, result_file):
     info("Translating a test sentence through the web server")
     translation = translation_test(cfg)
     info(f"Translation test passed: {TEST_TEXT} -> {translation}")
@@ -728,12 +786,6 @@ def check(cfg, api_key, log_path, result_file):
         if status != 401:
             raise LauncherError(f"llama-server accepted a request without the API key (HTTP {status})")
         info("llama-server rejects requests without the API key")
-    gpu_lines = []
-    try:
-        with open(log_path, encoding="utf-8", errors="replace") as f:
-            gpu_lines = [line[line.index("using device"):].strip() for line in f if "using device" in line]
-    except OSError:
-        pass
     if result_file:
         result = {"n_ctx": n_ctx(cfg, api_key), "translation": translation, "gpu_lines": gpu_lines}
         with open(result_file, "w", encoding="utf-8", newline="\n") as f:

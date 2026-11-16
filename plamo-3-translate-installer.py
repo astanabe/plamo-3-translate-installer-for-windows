@@ -1341,7 +1341,8 @@ Installation settings:
         if self.val["backend"] != "cpu":
             lines = result.get("gpu_lines") or []
             if not lines:
-                warn("llama-server does not use any GPU (no \"using device\" in its log); it runs on the CPU")
+                warn(f"llama-server does not find any GPU with the {self.val['backend']} backend "
+                     "(no \"using device\" in a test run with -lv 4); it runs on the CPU")
             for line in lines:
                 info(f"llama-server is {line}")
 
