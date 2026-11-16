@@ -583,9 +583,10 @@ def create_shortcuts(destdir):
 
 def schedule_delete(path):
     """Delete path from a detached cmd.exe once this process is gone (a running
-    python.exe cannot delete its own directory)."""
-    command = (f'"{cmd_exe()}" /d /s /c "for /l %i in (1,1,30) do @if exist "{path}\\" '
-               f'(rmdir /s /q "{path}" 2>nul & ping -n 2 127.0.0.1 >nul)"')
+    python.exe cannot delete its own directory).  It tries once a second and ends as soon
+    as the directory is gone, so that it cannot remove a later installation."""
+    command = (f'"{cmd_exe()}" /d /s /c "for /l %i in (1,1,30) do @(rmdir /s /q "{path}" 2>nul '
+               f'& (if not exist "{path}\\" exit) & ping -n 2 127.0.0.1 >nul)"')
     flags = 0x00000200 | 0x08000000  # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
     subprocess.Popen(command, cwd=os.environ.get("SystemRoot") or "C:\\", creationflags=flags, close_fds=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

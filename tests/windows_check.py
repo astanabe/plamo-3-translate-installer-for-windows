@@ -8,13 +8,18 @@ writes what it saw to a log file to send back to the developer.  Two optional pa
 asked about at the start: --expose-llama (Windows may show a firewall dialog) and
 uninstalling.
 
-Not covered (needs a person): Ctrl-C in the client, the pager test, closing the console
-window, the Start menu shortcuts themselves and the UAC prompt of the Uninstall shortcut.
+It also starts the Start menu shortcuts themselves (console windows appear and a browser
+tab opens; leave them alone) and closes their windows.
+
+Not covered (needs a person): the questions of an interactive installation, the UAC
+prompts, a look at the page in the browser, and the Ctrl-C key itself (Ctrl-Break and
+closing the window stand in for it).
 
 Standard library only.  This file is not part of the unit tests (they run on Linux).
 """
 
 import argparse
+import base64
 import ctypes
 import http.client
 import json
@@ -215,6 +220,45 @@ def run_installer(args, timeout=3600):
     return result.returncode, output
 
 
+def powershell(script):
+    """Run a short inline PowerShell script; returns its output."""
+    encoded = base64.b64encode(("$ProgressPreference = 'SilentlyContinue'\n" + script).encode("utf-16-le"))
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                             encoded.decode("ascii")], stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+    return decode(result.stdout)
+
+
+def launcher_pids(mode):
+    """Process ids of the launchers running in this mode (e.g. started from a shortcut)."""
+    output = powershell("Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                        "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
+    pids = []
+    for line in output.splitlines():
+        pid, _, command = line.partition("\t")
+        if "plamo-3-translate-launcher.py" in command and f"--mode {mode}" in command and pid.strip().isdigit():
+            pids.append(int(pid))
+    return pids
+
+
+def kill_launchers():
+    for mode in ("webui", "llama"):
+        for pid in launcher_pids(mode):
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+
+
+def users_rights(path):
+    """The icacls lines for BUILTIN\\Users, and whether they give read and execute only."""
+    result = subprocess.run(["icacls", path], capture_output=True, timeout=60)
+    text = result.stdout.decode("oem", "replace")
+    detail_only(text)
+    expect(result.returncode == 0, f"icacls failed: {text}")
+    lines = [line for line in text.splitlines() if "BUILTIN\\Users" in line]
+    read_only = bool(lines) and all(
+        re.fullmatch(r"\s*(\((OI|CI|IO|I)\))*\(RX\)\s*", line.split("BUILTIN\\Users:", 1)[1]) for line in lines)
+    others = "Authenticated Users" in text or "Everyone" in text
+    return [line.strip() for line in lines], read_only and not others
+
+
 def ports_closed(inst):
     return not port_open(inst.web_port) and not port_open(inst.llama_port)
 
@@ -223,18 +267,20 @@ def ports_closed(inst):
 
 def checks_permissions(inst):
     def permissions():
-        result = subprocess.run(["icacls", inst.destdir], capture_output=True, timeout=60)
-        text = result.stdout.decode("oem", "replace")
-        detail_only(text)
-        expect(result.returncode == 0, f"icacls failed: {text}")
-        users = [line for line in text.splitlines() if "BUILTIN\\Users" in line]
-        expect(users, "no entry for BUILTIN\\Users")
-        for line in users:
-            rights = line.split("BUILTIN\\Users:", 1)[1]
-            expect(re.fullmatch(r"\s*(\((OI|CI|IO|I)\))*\(RX\)\s*", rights), f"unexpected rights: {line.strip()}")
-        expect("Authenticated Users" not in text and "Everyone" not in text, "other groups have rights")
-        return users[0].strip()
+        lines, read_only = users_rights(inst.destdir)
+        expect(lines, "no entry for BUILTIN\\Users")
+        expect(read_only, f"Users (or other groups) have more than read and execute: {lines}")
+        return lines[0]
     check("install directory is read-only for Users", permissions)
+
+    def parent_permissions():
+        parent = os.path.dirname(inst.destdir)
+        lines, read_only = users_rights(parent)
+        if not read_only:
+            # Only a parent that the installer created itself is protected.
+            raise Skip(f"{parent} is writable for users; fine if it existed before the installation: {lines}")
+        return lines[0]
+    check("parent directory made by the installer is read-only for Users", parent_permissions)
 
 
 def checks_llama_mode(inst, workdir):
@@ -324,6 +370,31 @@ def checks_llama_mode(inst, workdir):
         expect("cannot be overwritten" in err, f"unexpected message: {tail(err)}")
         return err.strip().splitlines()[-1]
     check("client: -f on a destination open in another program fails before translating", locked_destination)
+
+    def reader_goes_away():
+        # As "plamo-3-translate-client ... | more" ended with q: the reader of standard
+        # output goes away while the client still translates.
+        path = os.path.join(workdir, "check-long.txt")
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write((JAPANESE + "\n\n") * 30)
+        proc = subprocess.Popen(["cmd.exe", "/d", "/c", "call", inst.client_bat, "-q", "--chunk-chars", "100",
+                                 "-o", "-", "check-long.txt"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, cwd=workdir)
+        try:
+            first = proc.stdout.read(1)
+            expect(first, "no output")
+            proc.stdout.close()
+            err = decode(proc.stderr.read())
+            status = proc.wait(timeout=300)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.stderr.close()
+        detail_only(err)
+        expect("Traceback" not in err, f"traceback:\n{tail(err, 30)}")
+        expect(status == 1, f"exit status {status} (expected 1): {tail(err)}")
+        return f"exit status 1, no traceback ({err.strip() or 'no message'})"
+    check("client: the reader of standard output goes away (| more, q)", reader_goes_away)
 
     def webui_conflict():
         status, output = run_launcher(inst, "webui")
@@ -462,6 +533,96 @@ def checks_webui_mode(inst, workdir):
     check("killing the launcher stops its children (job object)", killed_launcher)
 
 
+def checks_shortcuts(inst):
+    """The Start menu shortcuts themselves: their windows are real console windows."""
+    menu = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "Microsoft", "Windows", "Start Menu",
+                        "Programs", "PLaMo 3 Translate")
+    webui_lnk = os.path.join(menu, "PLaMo 3 Translate Web UI.lnk")
+    llama_lnk = os.path.join(menu, "PLaMo 3 Translate llama-server.lnk")
+
+    def properties():
+        script = "$shell = New-Object -ComObject WScript.Shell\n"
+        for name in sorted(os.listdir(menu)):
+            if name.endswith(".lnk"):
+                script += ("$s = $shell.CreateShortcut('" + os.path.join(menu, name).replace("'", "''") + "'); "
+                           "\"$($s.TargetPath)`t$($s.Arguments)`t$($s.WorkingDirectory)\"\n")
+        lines = [line for line in powershell(script).splitlines() if line.strip()]
+        detail_only("\n".join(lines))
+        expect(len(lines) == 4, f"expected four shortcuts: {lines}")
+        for line in lines:
+            target, arguments, workdir = (line.split("\t") + ["", ""])[:3]
+            expect(os.path.isfile(target), f"the target does not exist: {target}")
+            expect(os.path.isdir(workdir), f"the working directory does not exist: {workdir}")
+            for quoted in re.findall(r'"([^"]+\.(?:py|bat))"', arguments):
+                expect(os.path.isfile(quoted), f"a file in the arguments does not exist: {quoted}")
+    check("Start menu: four shortcuts with existing targets", properties)
+
+    def close_window(mode):
+        """Close the console window of the launcher, as the X button does (taskkill
+        without /F sends the window a close message).  True if the servers stopped."""
+        pids = launcher_pids(mode)
+        expect(len(pids) == 1, f"expected one {mode} launcher, found {pids}")
+        result = subprocess.run(["taskkill", "/PID", str(pids[0])], capture_output=True)
+        detail_only(result.stdout.decode("oem", "replace") + result.stderr.decode("oem", "replace"))
+        return wait_until(lambda: ports_closed(inst) and not launcher_pids(mode), 30)
+
+    try:
+        def start_llama():
+            os.startfile(llama_lnk)
+            expect(wait_until(lambda: (http_request(inst.llama_port, "GET", "/health", timeout=5) or (0,))[0] == 200,
+                              600), "llama-server did not become ready")
+            expect(len(launcher_pids("llama")) == 1, "no launcher process found")
+        if check("llama-server shortcut starts llama-server", start_llama):
+            def error_screen():
+                os.startfile(webui_lnk)
+                time.sleep(12)
+                pids = launcher_pids("webui")
+                expect(len(pids) == 1, "the window with the error closed by itself (no launcher is waiting)")
+                expect(not port_open(inst.web_port), "a web server was started")
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pids[0])], capture_output=True)
+                return "the window stays open, waiting for a key"
+            check("Web UI shortcut while llama-server runs: the error stays until a key is pressed", error_screen)
+
+            def close_llama():
+                if not close_window("llama"):
+                    kill_launchers()
+                    raise Skip("the window could not be closed from a program (taskkill without /F); "
+                               "closing it by hand was checked before")
+            check("closing the llama-server window stops llama-server", close_llama)
+
+        def start_webui():
+            expect(wait_until(lambda: ports_closed(inst), 30), "a port is still in use")
+            os.startfile(webui_lnk)  # this opens the web browser, too
+            expect(wait_until(lambda: (http_request(inst.llama_port, "GET", "/health", timeout=5) or (0,))[0] == 200
+                              and port_open(inst.web_port), 600), "the Web UI did not become ready")
+            page = http_request(inst.web_port, "GET", "/")
+            expect(page and page[0] == 200 and b"<title>PLaMo 3 Translate</title>" in page[1], "unexpected page")
+            return "started; a browser tab should have opened"
+        if check("Web UI shortcut starts both servers", start_webui):
+            def close_webui():
+                if not close_window("webui"):
+                    kill_launchers()
+                    raise Skip("the window could not be closed from a program (taskkill without /F); "
+                               "closing it by hand was checked before")
+            check("closing the Web UI window stops both servers", close_webui)
+    finally:
+        kill_launchers()
+        if not wait_until(lambda: ports_closed(inst), 15):
+            subprocess.run(["taskkill", "/F", "/IM", "llama-server.exe"], capture_output=True)
+            wait_until(lambda: ports_closed(inst), 15)
+
+    def command_prompt():
+        prompt = os.path.join(inst.destdir, "command-prompt.bat")
+        command = f'cmd.exe /d /s /c "call "{prompt}" & chcp & where plamo-3-translate-client & cd"'
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, cwd=inst.destdir)
+        output = decode(result.stdout) + decode(result.stderr)
+        detail_only(output)
+        expect("65001" in output, f"the code page is not 65001:\n{tail(output)}")
+        expect(inst.client_bat.lower() in output.lower(), f"the client is not on PATH:\n{tail(output)}")
+        expect("plamo-3-translate-client FILE" in output, f"the usage hint is missing:\n{tail(output)}")
+    check("Command Prompt shortcut: UTF-8 code page, client on PATH", command_prompt)
+
+
 def checks_installer(inst, workdir):
     def rerun():
         status, output = run_installer(["--accept-license", "--destdir", inst.destdir])
@@ -557,7 +718,32 @@ def checks_uninstall(inst):
         expect(wait_until(lambda: not os.path.exists(inst.destdir), 90, step=1),
                f"{inst.destdir} is still there after 90 s: {os.listdir(inst.destdir) if os.path.isdir(inst.destdir) else ''}")
         expect(os.path.isdir(os.path.dirname(inst.destdir)), "the parent directory was removed too")
-    check("uninstall from the installed copy removes shortcuts and the install directory", uninstall)
+    if not check("uninstall from the installed copy removes shortcuts and the install directory", uninstall):
+        return
+
+    def reinstall():
+        # A whole non-interactive installation with the settings from before, downloads
+        # included; it also puts PLaMo 3 Translate back.
+        time.sleep(5)
+        cfg = inst.cfg
+        args = ["--accept-license", "--destdir", inst.destdir, "--model", cfg["model"], "--quant", cfg["quant"],
+                "--backend", cfg["backend"], "--ctx-size", str(cfg["ctx_size"]),
+                "--web-port", str(cfg["web_port"]), "--llama-port", str(cfg["llama_port"]),
+                "--listen" if cfg.get("listen") == "yes" else "--no-listen",
+                "--expose-llama" if cfg.get("expose_llama") == "yes" else "--no-expose-llama"]
+        if cfg.get("gpus"):
+            args += ["--gpus", cfg["gpus"]]
+        status, output = run_installer(args)
+        expect(status == 0, f"exit status {status}:\n{tail(output, 25)}")
+        for text in ("Downloading llama-", "Downloading plamo-3-translate-", "Translation test passed",
+                     "PLaMo 3 Translate is installed."):
+            expect(text in output, f"missing in the output: {text!r}\n{tail(output, 25)}")
+        time.sleep(40)  # a leftover of the uninstaller must not remove the new installation
+        expect(os.path.isfile(inst.python) and os.path.isfile(inst.launcher), "the new installation is incomplete")
+        expect(len([n for n in os.listdir(menu) if n.endswith(".lnk")]) == 4, "the shortcuts are missing")
+        lines, read_only = users_rights(inst.destdir)
+        expect(read_only, f"Users have more than read and execute: {lines}")
+    check("fresh non-interactive installation (downloads everything again)", reinstall)
 
 
 def ask(question):
@@ -585,10 +771,12 @@ def main():
         sys.exit("PLaMo 3 Translate seems to be running (a port is in use); close its windows and run this again.")
 
     print("This checks the installed PLaMo 3 Translate: it starts and stops the servers several")
-    print("times and re-runs the installer.  It takes a few minutes; do not start PLaMo 3")
-    print("Translate meanwhile.  Two optional parts:")
+    print("times and re-runs the installer.  Console windows appear and close, and a browser tab")
+    print("opens: leave them alone, and do not start PLaMo 3 Translate meanwhile.  It takes a few")
+    print("minutes.  Two optional parts:")
     expose = args.expose or ask("Also test --expose-llama?  (Windows may show a firewall dialog: choose Cancel)")
-    uninstall = args.uninstall or ask("Also test uninstalling at the end?  (PLaMo 3 Translate is then removed)")
+    uninstall = args.uninstall or ask("Also test uninstalling and installing again at the end?  "
+                                      "(the model is downloaded again)")
     print()
 
     log_file = open(LOG_PATH, "w", encoding="utf-8", newline="\n")
@@ -606,6 +794,7 @@ def main():
             checks_permissions(inst)
             checks_llama_mode(inst, workdir)
             checks_webui_mode(inst, workdir)
+            checks_shortcuts(inst)
             checks_installer(inst, workdir)
             if expose:
                 checks_expose(inst, workdir)
