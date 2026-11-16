@@ -329,12 +329,34 @@ def set_title(title):
         pass
 
 
+def stdin_is_console():
+    """Whether standard input is a terminal that a person can type into.  On Windows
+    isatty() is also true for the NUL device (standard input of a program started without
+    one), where reading gives end of file and msvcrt.getch() would wait on the console
+    all the same: ask the console API instead."""
+    try:
+        if not (sys.stdin and sys.stdin.isatty()):
+            return False
+        if not WINDOWS:
+            return True
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        mode = wintypes.DWORD()
+        return bool(kernel32.GetConsoleMode(msvcrt.get_osfhandle(sys.stdin.fileno()), ctypes.byref(mode)))
+    except Exception:
+        return False
+
+
 def wait_for_key():
     """Keep the console window open until a key is pressed."""
     if not WINDOWS:
         return
     try:
-        if not (sys.stdin and sys.stdin.isatty()):
+        if not stdin_is_console():
             return
         import msvcrt
         print("\nPress any key to close this window.", flush=True)

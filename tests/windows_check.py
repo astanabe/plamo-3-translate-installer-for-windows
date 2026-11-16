@@ -82,7 +82,12 @@ def expect(condition, message):
 
 
 def decode(data):
-    return (data or b"").decode("utf-8", "replace")
+    """Output of a program: UTF-8, or else the ANSI code page (system messages)."""
+    data = data or b""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("mbcs" if sys.platform == "win32" else "utf-8", "replace")
 
 
 def tail(text, lines=15):

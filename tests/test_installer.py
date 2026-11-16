@@ -237,6 +237,15 @@ class Values(TempCase):
             inst.prompt_values()
 
 
+class Terminal(unittest.TestCase):
+    def test_no_terminal_is_not_interactive(self):
+        with mock.patch.object(sys, "stdin", io.StringIO("")):
+            self.assertFalse(ins.stdin_is_console())
+            self.assertFalse(ins.Installer(ins.parse_args([]), environ={}).interactive)
+        with mock.patch.object(sys, "stdin", None):
+            self.assertFalse(ins.stdin_is_console())
+
+
 class License(unittest.TestCase):
     def test_non_interactive_needs_accept_license(self):
         result, out, err = quiet(make_installer("--yes").confirm_license)

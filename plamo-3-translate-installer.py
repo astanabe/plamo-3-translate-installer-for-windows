@@ -337,9 +337,31 @@ def relaunch_elevated(argv):
         raise Die("administrator privileges were not granted")
 
 
+def stdin_is_console():
+    """Whether standard input is a terminal that a person can type into.  On Windows
+    isatty() is also true for the NUL device (standard input of a program started without
+    one), where reading gives end of file and msvcrt.getch() would wait on the console
+    all the same: ask the console API instead."""
+    try:
+        if not (sys.stdin and sys.stdin.isatty()):
+            return False
+        if not WINDOWS:
+            return True
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        mode = wintypes.DWORD()
+        return bool(kernel32.GetConsoleMode(msvcrt.get_osfhandle(sys.stdin.fileno()), ctypes.byref(mode)))
+    except Exception:
+        return False
+
+
 def wait_for_key():
     try:
-        if WINDOWS and sys.stdin and sys.stdin.isatty():
+        if WINDOWS and stdin_is_console():
             import msvcrt
             print("\nPress any key to close this window.", flush=True)
             msvcrt.getch()
@@ -788,7 +810,7 @@ class Installer:
     def __init__(self, args, environ=None, interactive=None):
         self.args = args
         self.environ = os.environ if environ is None else environ
-        self.interactive = bool(sys.stdin and sys.stdin.isatty()) if interactive is None else interactive
+        self.interactive = stdin_is_console() if interactive is None else interactive
         self.assume_yes = args.yes
         self.accept_license = args.accept_license or yesno(self.environ.get("PLAMO3_ACCEPT_LICENSE", "")) == "yes"
         self.val = {}
