@@ -9,7 +9,7 @@ This is the Windows counterpart of plamo-3-translate-installer-for-resolute (Ubu
 ## Status
 
 - Developed on Linux. The logic of the installer and the launcher is covered by tests that run there (`python3 -m unittest discover tests`); the Windows-only parts (the `.bat` file, access rights, shortcuts, elevation, the job object) cannot be run there.
-- Tested on Windows 11 with the `cpu` backend (0.8B, Q4_0), by hand and with `tests\windows-check.bat` (see [Development](#development); all 29 checks passed on 2026-11-16): interactive and non-interactive installation, re-running, `--expose-llama`, uninstalling, the shortcuts, the error screens when one server is started while the other runs, the access rights of the install directory, and the client. The PC had the Visual C++ runtime installed, so it is not known whether llama-server starts without it.
+- Tested on Windows 11 with the `cpu` backend (0.8B Q4_0 and 2B Q4_K_M), by hand and with `tests\windows-check.bat` (see [Development](#development); all 39 checks passed on 2026-11-16): interactive and non-interactive installation, re-running, `--expose-llama`, uninstalling and installing again, the shortcuts and closing their windows, the error screens when one server is started while the other runs, the access rights of the install directory, and the client. The PC had the Visual C++ runtime installed, so it is not known whether llama-server starts without it.
 - **The `vulkan`, `cuda12` and `cuda13` backends and `--gpus` are implemented but untested**: no Windows machine with a GPU was available.
 
 ## Prerequisites
