@@ -588,8 +588,11 @@ INDEX_HTML = """<!doctype html>
                      font-size: 2.5rem; font-weight: 700; color: var(--fg); opacity: .12;
                      pointer-events: none; user-select: none; text-align: center; }
   /* Copy buttons in the bottom-right corner of each textarea (left of the scrollbar
-     and the resize handle). */
-  .pane .copy { position: absolute; bottom: .4rem; right: 1.4rem; z-index: 2;
+     and the resize handle): Copy above ConcatCopy.  The box itself lets clicks through
+     to the textarea. */
+  .pane .tools { position: absolute; bottom: .4rem; right: 1.4rem; z-index: 2;
+                 display: flex; flex-direction: column; gap: .3rem; pointer-events: none; }
+  .pane .copy { pointer-events: auto;
                 font-size: .8rem; padding: .15rem .6rem; opacity: .75; color: var(--accent);
                 background: color-mix(in srgb, var(--accent) 12%, var(--card));
                 border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--card)); }
@@ -671,12 +674,18 @@ INDEX_HTML = """<!doctype html>
       <div class="pane pane-src">
         <label class="watermark" for="text">Source text</label>
         <textarea id="text" required></textarea>
-        <button class="copy" type="button" data-target="text" aria-label="Copy the source text">Copy</button>
+        <div class="tools">
+          <button class="copy" type="button" data-target="text" aria-label="Copy the source text">Copy</button>
+          <button class="copy" type="button" aria-label="Copy the source text and the translation, joined by a ==== line">ConcatCopy</button>
+        </div>
       </div>
       <div class="pane pane-dst">
         <label class="watermark" for="result">Translation</label>
         <textarea id="result" readonly></textarea>
-        <button class="copy" type="button" data-target="result" aria-label="Copy the translation">Copy</button>
+        <div class="tools">
+          <button class="copy" type="button" data-target="result" aria-label="Copy the translation">Copy</button>
+          <button class="copy" type="button" aria-label="Copy the source text and the translation, joined by a ==== line">ConcatCopy</button>
+        </div>
       </div>
     </div>
     <button class="go go-right" type="submit">Translate</button>
@@ -763,34 +772,47 @@ INDEX_HTML = """<!doctype html>
   $("target_lang").addEventListener("change", syncForm);
   syncForm();
 
-  // Copy a textarea to the clipboard.  navigator.clipboard needs a secure context
-  // (HTTPS or localhost); over plain HTTP fall back to selecting the text and execCommand.
-  function copyText(area) {
-    var text = area.value;
+  // Copy a string to the clipboard.  navigator.clipboard needs a secure context
+  // (HTTPS or localhost); over plain HTTP fall back to selecting the text in a
+  // temporary textarea and execCommand.
+  function copyText(text) {
     if (navigator.clipboard && window.isSecureContext) {
       return navigator.clipboard.writeText(text);
     }
     return new Promise(function (resolve, reject) {
-      var start = area.selectionStart, end = area.selectionEnd;
-      area.focus();
-      area.select();
+      var active = document.activeElement;
+      var tmp = document.createElement("textarea");
+      tmp.value = text;
+      tmp.readOnly = true;
+      tmp.style.cssText = "position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0;";
+      document.body.appendChild(tmp);
+      tmp.focus();
+      tmp.select();
       var ok = false;
       try { ok = document.execCommand("copy"); } catch (e) {}
-      area.setSelectionRange(start, end);
+      document.body.removeChild(tmp);
+      if (active && active.focus) active.focus();
       if (ok) { resolve(); } else { reject(new Error("copy failed")); }
     });
   }
+  // Copy: the button's own textarea.  ConcatCopy (no data-target): Source text and
+  // Translation, joined by a ==== line between two empty lines.
   document.querySelectorAll(".copy").forEach(function (btn) {
-    var timer = null;
-    function flash(label) {
-      btn.textContent = label;
+    var label = btn.textContent, timer = null;
+    function flash(message) {
+      btn.textContent = message;
       clearTimeout(timer);
-      timer = setTimeout(function () { btn.textContent = "Copy"; }, 1500);
+      timer = setTimeout(function () { btn.textContent = label; }, 1500);
     }
     btn.addEventListener("click", function () {
-      var area = $(btn.dataset.target);
-      if (!area.value) { flash("Empty"); return; }
-      copyText(area).then(function () { flash("Copied"); },
+      var text;
+      if (btn.dataset.target) {
+        text = $(btn.dataset.target).value;
+      } else if ($("text").value || $("result").value) {
+        text = $("text").value + "\\n\\n====\\n\\n" + $("result").value;
+      }
+      if (!text) { flash("Empty"); return; }
+      copyText(text).then(function () { flash("Copied"); },
                           function () { flash("Failed"); });
     });
   });

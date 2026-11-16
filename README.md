@@ -150,7 +150,7 @@ plamo-3-translate-client.py ──────────> 28080
 - `install-plamo-3-translate.bat` only checks for administrator privileges, fetches the embeddable Python package (pinned by SHA-256) into `%TEMP%\plamo-3-translate-installer` and runs `plamo-3-translate-installer.py` with it. There is no PowerShell script file, so the PowerShell execution policy does not matter; PowerShell is used only for short inline commands (elevation, the `.lnk` files, the names of the display adapters).
 - `plamo-3-translate-installer.py` does the work: questions, checks, downloads (resumed after interruptions, verified by SHA-256), files, access rights, shortcuts, the translation test, and uninstalling.
 - `plamo-3-translate-launcher.py` is what the shortcuts run. It starts llama-server (`--jinja --no-prefill-assistant --alias plamo-3-translate`) and, for the Web UI, `plamo-3-translate-server.py` in its stand-alone mode (no nginx or uWSGI), waits for llama-server's `/health`, and opens the browser. The children are stopped with the window; a job object stops them even if the launcher is killed.
-- `plamo-3-translate-server.py` and `plamo-3-translate-client.py` are byte-identical copies from plamo-3-translate-installer-for-resolute (commit `3902612`); changes to them are made there.
+- `plamo-3-translate-server.py` and `plamo-3-translate-client.py` are byte-identical copies from plamo-3-translate-installer-for-resolute (commit `f8c3fa4`); changes to them are made there.
 - Only the Python standard library is used.
 
 ### Files

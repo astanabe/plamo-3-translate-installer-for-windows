@@ -24,10 +24,10 @@ from support import (BAT, CLIENT, INSTALLER, SERVER, STUB, FileServer, free_port
 
 ins = load_module("plamo3_installer", INSTALLER)
 
-# The files copied unchanged from plamo-3-translate-installer-for-resolute, commit 3902612
+# The files copied unchanged from plamo-3-translate-installer-for-resolute, commit f8c3fa4
 # (git blob ids).  Update them together with CLAUDE.md when new copies are taken.
 RESOLUTE_BLOBS = {
-    SERVER: "3a7dfa6f715875e31c9397bbb228b9fb5b51d86b",
+    SERVER: "61e2a6ce4f95018a2bfddb6d09a6b52a51b4a1b4",
     CLIENT: "40b0298ea60ba077518e3e40da05185a2e8df285",
 }
 
